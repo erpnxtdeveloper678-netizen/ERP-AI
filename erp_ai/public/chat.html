@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ERP AI Assistant</title>
+    <!-- ربط ملف الـ CSS الخارجي -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- زر التبديل العائم السفلي (مستقل ومكانه بره النافذة) -->
+    <div id="erp-ai-button">
+        <div class="erp-button-pulse"></div>
+        <div class="button-logo-inside">
+            <span class="btn-e">E</span><span class="btn-ai">AI</span>
+        </div>
+    </div>
+
+    <!-- النافذة الرئيسية للمساعد -->
+    <div id="erp-ai-window">
+        
+        <!-- الهيدر الرئيسي -->
+        <div id="erp-ai-header">
+            <div id="erp-ai-title">
+                <!-- شعار E AI الدائري المودرن في الهيدر -->
+                <div id="erp-ai-logo">
+                    <span class="logo-e">E</span><span class="logo-ai">AI</span>
+                </div>
+                <div>
+                    <div class="erp-ai-name">ERP Assistant</div>
+                    <div class="erp-ai-status">Online</div>
+                </div>
+            </div>
+            <div id="erp-ai-actions">
+                <button id="erp-ai-minimize">—</button>
+                <button id="erp-ai-close">✕</button>
+            </div>
+        </div>
+
+        <!-- جسم المحادثة والرسائل -->
+        <div id="erp-ai-body">
+            
+            <!-- شاشة الترحيب بالاقتراحات -->
+            <div id="erp-ai-welcome">
+                <h2>👋 Welcome to ERP AI</h2>
+                <p>How can I assist you with your workflows today?</p>
+                <div id="erp-ai-suggestions">
+
+                </div>
+            </div>
+
+            <!-- منطقة الرسائل التفاعلية (فاضية وجاهزة لاستقبال الـ Append من السكريبت) -->
+            <div id="erp-ai-messages"></div>
+            
+        </div>
+
+        <!-- الفوتر وصندوق الإدخال -->
+        <div id="erp-ai-footer">
+            <div class="erp-ai-input-wrapper">
+                <textarea id="erp-ai-input" rows="1" placeholder="Ask anything..."></textarea>
+                <button id="erp-ai-send">➜</button>
+            </div>
+        </div>
+
+    </div>
+
+</body>
+</html>

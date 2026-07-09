@@ -25,12 +25,12 @@ app_license = "mit"
 # ------------------
 
 # include js, css files in header of desk.html
-# app_include_css = "/assets/erp_ai/css/erp_ai.css"
-# app_include_js = "/assets/erp_ai/js/erp_ai.js"
+ #app_include_css = "/assets/erp_ai/css/erp_ai.css"
+ #app_include_js = "/assets/erp_ai/js/erp_ai.js"
 
 # include js, css files in header of web template
-# web_include_css = "/assets/erp_ai/css/erp_ai.css"
-# web_include_js = "/assets/erp_ai/js/erp_ai.js"
+ #web_include_css = "/assets/erp_ai/css/erp_ai.css"
+ #web_include_js = "/assets/erp_ai/js/erp_ai.js"
 
 # include custom scss in every website theme (without file extension ".scss")
 # website_theme_scss = "erp_ai/public/scss/website"
@@ -241,4 +241,5 @@ app_license = "mit"
 # default_log_clearing_doctypes = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
-
+app_include_js = "erp_ai.bundle.js"
+app_include_css = "erp_ai.bundle.css"
