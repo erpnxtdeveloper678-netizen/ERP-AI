@@ -1,6 +1,4 @@
-/****************************************************************
- * ERP AI Assistant (FINAL STABLE VERSION + HTML TABLES & CSV)
- ****************************************************************/
+
 
 class ERPAI {
 
@@ -169,7 +167,6 @@ class ERPAI {
         }
     }
     
-    // استخراج الجداول وتحويلها لـ JSON بشكل آمن
     extractTableData(mdText) {
         try {
             let lines = mdText.split('\n').filter(line => line.trim().includes('|'));
@@ -221,13 +218,11 @@ class ERPAI {
             const tableData = this.extractTableData(String(cleanText));
             
             if (tableData && tableData.length > 0) {
-                // فصل النص التحليلي عن جدول الماركدون الخام
                 let textParts = String(cleanText).split(/\|.*\|/);
                 let textWithoutTable = textParts[0] ? textParts[0].trim() : "";
                 
                 let htmlOutput = `<div class="ai-text-part" style="margin-bottom: 10px;">${textWithoutTable}</div>`;
                 
-                // بناء جدول HTML منسق وجميل للعميل
                 htmlOutput += `<div class="table-responsive" style="margin-top: 8px; margin-bottom: 8px; overflow-x: auto;">
                     <table class="table table-bordered table-striped" style="width: 100%; background: #fff; font-size: 11px; color: #333; border-collapse: collapse;">
                         <thead>
@@ -250,12 +245,11 @@ class ERPAI {
                 
                 htmlOutput += `</tbody></table></div>`;
 
-                // زرار التصدير المحترم والشغال
                 let encodedData = encodeURIComponent(JSON.stringify(tableData));
                 htmlOutput += `
                     <div class="message-actions" style="margin-top: 10px; clear: both; width: 100%;">
                         <button class="btn btn-xs btn-default export-csv-btn" onclick='downloadReportCSV(JSON.parse(decodeURIComponent("${encodedData}")))' style="cursor: pointer; background: #f8f9fa; border: 1px solid #cbd5d1; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: #2c3e50; width: 100%; box-sizing: border-box;">
-                            <i class="fa fa-download"></i> تحميل التقرير (CSV)
+                            <i class="fa fa-download"></i> Download (CSV)
                         </button>
                     </div>
                 `;

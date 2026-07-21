@@ -67,9 +67,7 @@ def get_tool(name):
     return TOOLS.get(name)
 
 
-# =================================================================
-# 🎯 دالة الاستعلام الفعلي من قاعدة البيانات المتأمنة ضد أخطاء الـ SDK
-# =================================================================
+
 def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
     """
     دالة آمنة تتيح للـ AI جلب البيانات مباشرة من أي DocType في ERPNext
@@ -105,9 +103,8 @@ def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
     except Exception as e:
         return {"error": str(e)}
 
-# =================================================================
-# 🎯 دالة إدارة مستندات ERPNext بصلاحيات كاملة وآمنة (إلغاء، اعتماد، تعديل، حذف)
-# =================================================================
+
+
 def manage_erp_document(doctype, docname, action, data=None):
     """
     دالة موحدة وذكية لتنفيذ أي إجراء (action) على المستندات بناءً على صلاحيات المستخدم الفعلي:
@@ -180,9 +177,7 @@ def manage_erp_document(doctype, docname, action, data=None):
         frappe.log_error(title=f"ERP AI Document Action Error [{action}]", message=frappe.get_traceback())
         return {"status": "error", "message": str(e)}
 
-# =================================================================
-# 🚀 تسجيل الأدوات في الـ Registry
-# =================================================================
+
 register_tool(
     name="run_erp_query",
     description="Use this tool to fetch records, data, analytics, and lists from any ERPNext DocType like Sales Invoice, Customer, Item, Purchase Invoice, etc.",
