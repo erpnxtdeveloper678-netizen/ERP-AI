@@ -1,5 +1,5 @@
 /****************************************************************
- * ERP AI Assistant (FINAL STABLE VERSION - BACK TO ORIGINAL)
+ * ERP AI Assistant (FINAL STABLE VERSION + HTML TABLES & CSV)
  ****************************************************************/
 
 class ERPAI {
@@ -121,7 +121,7 @@ class ERPAI {
         if (input) input.focus();
     }
 
-async sendMessage() {
+    async sendMessage() {
         const input = document.getElementById("erp-ai-input");
         const message = input.value.trim();
 
@@ -152,7 +152,6 @@ async sendMessage() {
             if (response && response.message && response.message.reply) {
                 let fullReply = response.message.reply;
                 
-                // 🎯 التعديل السحري: لو الرد جاي على هيئة لستة مقطعة، بنجمعها في نص واحد صريح
                 if (Array.isArray(fullReply)) {
                     fullReply = fullReply.join("");
                 }
@@ -170,6 +169,40 @@ async sendMessage() {
         }
     }
     
+    // استخراج الجداول وتحويلها لـ JSON بشكل آمن
+    extractTableData(mdText) {
+        try {
+            let lines = mdText.split('\n').filter(line => line.trim().includes('|'));
+            let separatorIndex = lines.findIndex(line => line.match(/\|[-\s:]+\|/));
+            
+            if (separatorIndex < 1) return null; 
+
+            let parseRow = (row) => {
+                let trimmed = row.trim();
+                if (trimmed.startsWith('|')) trimmed = trimmed.substring(1);
+                if (trimmed.endsWith('|')) trimmed = trimmed.substring(0, trimmed.length - 1);
+                return trimmed.split('|').map(c => c.trim());
+            };
+
+            let headers = parseRow(lines[separatorIndex - 1]);
+            let data = [];
+
+            for (let i = separatorIndex + 1; i < lines.length; i++) {
+                if (!lines[i].trim().includes('|')) break;
+                let cells = parseRow(lines[i]);
+                let rowObj = {};
+                headers.forEach((h, idx) => {
+                    rowObj[h] = cells[idx] !== undefined ? cells[idx] : "";
+                });
+                data.push(rowObj);
+            }
+            return data.length > 0 ? data : null;
+        } catch (e) {
+            console.error("Error parsing table:", e);
+            return null;
+        }
+    }
+
     addMessage(text, sender) {
         const container = document.getElementById("erp-ai-messages");
         const row = document.createElement("div");
@@ -182,11 +215,59 @@ async sendMessage() {
         const bubble = document.createElement("div");
         bubble.className = "erp-ai-message " + sender;
 
-        // تأمين النص هنا عشان نمنع إيرور الـ substr نهائياً
         let cleanText = typeof text === "object" ? (text.reply || JSON.stringify(text)) : text;
 
-        if (sender === "assistant" && window.frappe && frappe.markdown) {
-            bubble.innerHTML = frappe.markdown(String(cleanText));
+        if (sender === "assistant") {
+            const tableData = this.extractTableData(String(cleanText));
+            
+            if (tableData && tableData.length > 0) {
+                // فصل النص التحليلي عن جدول الماركدون الخام
+                let textParts = String(cleanText).split(/\|.*\|/);
+                let textWithoutTable = textParts[0] ? textParts[0].trim() : "";
+                
+                let htmlOutput = `<div class="ai-text-part" style="margin-bottom: 10px;">${textWithoutTable}</div>`;
+                
+                // بناء جدول HTML منسق وجميل للعميل
+                htmlOutput += `<div class="table-responsive" style="margin-top: 8px; margin-bottom: 8px; overflow-x: auto;">
+                    <table class="table table-bordered table-striped" style="width: 100%; background: #fff; font-size: 11px; color: #333; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background: #f1f3f5;">`;
+                
+                let headers = Object.keys(tableData[0]);
+                headers.forEach(h => {
+                    htmlOutput += `<th style="padding: 6px 8px; border: 1px solid #dee2e6; text-align: right;">${h}</th>`;
+                });
+                
+                htmlOutput += `</tr></thead><tbody>`;
+                
+                tableData.forEach(row => {
+                    htmlOutput += `<tr>`;
+                    headers.forEach(h => {
+                        htmlOutput += `<td style="padding: 6px 8px; border: 1px solid #dee2e6; text-align: right;">${row[h] || ''}</td>`;
+                    });
+                    htmlOutput += `</tr>`;
+                });
+                
+                htmlOutput += `</tbody></table></div>`;
+
+                // زرار التصدير المحترم والشغال
+                let encodedData = encodeURIComponent(JSON.stringify(tableData));
+                htmlOutput += `
+                    <div class="message-actions" style="margin-top: 10px; clear: both; width: 100%;">
+                        <button class="btn btn-xs btn-default export-csv-btn" onclick='downloadReportCSV(JSON.parse(decodeURIComponent("${encodedData}")))' style="cursor: pointer; background: #f8f9fa; border: 1px solid #cbd5d1; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: #2c3e50; width: 100%; box-sizing: border-box;">
+                            <i class="fa fa-download"></i> تحميل التقرير (CSV)
+                        </button>
+                    </div>
+                `;
+                
+                bubble.innerHTML = htmlOutput;
+            } else {
+                if (window.frappe && frappe.markdown) {
+                    bubble.innerHTML = frappe.markdown(String(cleanText));
+                } else {
+                    bubble.innerText = String(cleanText);
+                }
+            }
         } else {
             bubble.innerText = String(cleanText);
         }
@@ -234,3 +315,37 @@ $(function () {
     console.log("ERP AI Clean & Stable Version Loaded.");
     window.erp_ai = new ERPAI();
 });
+
+// دالة التحميل العامة
+window.downloadReportCSV = function(jsonData, filename = "erp_report.csv") {
+    if (typeof jsonData === "string") {
+        try {
+            jsonData = JSON.parse(jsonData);
+        } catch (e) {
+            console.error("Invalid JSON data");
+            return;
+        }
+    }
+
+    frappe.call({
+        method: "erp_ai.api.export_data_to_csv",
+        args: {
+            data_json: jsonData,
+            filename: filename
+        },
+        callback: function(r) {
+            if (r.message && r.message.status === "success") {
+                let blob = new Blob([r.message.filedata], { type: 'text/csv;charset=utf-8;' });
+                let link = document.createElement("a");
+                let url = URL.createObjectURL(blob);
+                link.setAttribute("href", url);
+                link.setAttribute("download", r.message.file_name);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            } else {
+                frappe.msgprint(__('حدث خطأ أثناء تصدير الملف'));
+            }
+        }
+    });
+};

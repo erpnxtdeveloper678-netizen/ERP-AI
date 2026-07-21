@@ -29,7 +29,7 @@ def list_tools():
 def get_functions():
     """
     Returns the tools formatted as raw dictionaries (JSON Schema)
-    as required by the new 'google-genai' Client SDK.
+    as required by the new Client SDK.
     """
     functions_list = []
     for tool in TOOLS.values():
@@ -73,10 +73,8 @@ def get_tool(name):
 def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
     """
     دالة آمنة تتيح للـ AI جلب البيانات مباشرة من أي DocType في ERPNext
-    محدثة ومؤمنة بالكامل لتفادي خطأ (unexpected keyword argument) من الـ SDK
     """
     try:
-        # تأمين وقراءة البرامترز بأي صيغة يبعتها جيمناي (بـ Underscore أو بدونها)
         order_by = kwargs.get("order_by") or kwargs.get("orderby") or "creation desc"
 
         if isinstance(fields, str):
@@ -93,11 +91,9 @@ def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
             except:
                 filters = {}
 
-        # لو طلب Sales Invoice نضمن رجوع الحقول الهامة للتحليل، وغير كدا يسحب الكل
         if not fields or fields == ["name"]:
             fields = ["name", "customer", "grand_total", "posting_date"] if doctype == "Sales Invoice" else ["*"]
 
-        # تنفيذ الاستعلام الآمن من فرابيه
         data = frappe.get_list(
             doctype,
             fields=fields,
@@ -110,7 +106,82 @@ def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
         return {"error": str(e)}
 
 # =================================================================
-# 🚀 تسجيل الأداة في الـ Registry مع إعلام الموديل بالبرامتر المتاحة
+# 🎯 دالة إدارة مستندات ERPNext بصلاحيات كاملة وآمنة (إلغاء، اعتماد، تعديل، حذف)
+# =================================================================
+def manage_erp_document(doctype, docname, action, data=None):
+    """
+    دالة موحدة وذكية لتنفيذ أي إجراء (action) على المستندات بناءً على صلاحيات المستخدم الفعلي:
+    - cancel: إلغاء المستند
+    - submit: اعتماد المستند
+    - update: تحديث حقول معينة في المستند
+    - delete: حذف المستند (إذا كان مسودة)
+    """
+    try:
+        action = action.lower().strip()
+        
+        # 1. تحديد الصلاحية المطلوبة بناءً على نوع الإجراء
+        perm_type_map = {
+            "cancel": "cancel",
+            "submit": "submit",
+            "update": "write",
+            "delete": "delete"
+        }
+        
+        required_perm = perm_type_map.get(action, "write")
+        
+        # 2. التحقق من صلاحيات المستخدم الحالي على المستند
+        if not frappe.has_permission(doctype, required_perm, docname):
+            return {"status": "error", "message": f"عذراً، لا تملك صلاحية ({action}) على هذا المستند ({docname})."}
+        
+        doc = frappe.get_doc(doctype, docname)
+        
+        # 3. تنفيذ الإجراء المطلوب
+        if action == "cancel":
+            if doc.docstatus == 1:
+                doc.cancel()
+                return {"status": "success", "message": f"تم إلغاء المستند ({docname}) بنجاح تام."}
+            return {"status": "error", "message": f"المستند ({docname}) ليس في حالة معتمدة لكي يتم إلغاؤه."}
+            
+        elif action == "submit":
+            if doc.docstatus == 0:
+                doc.submit()
+                return {"status": "success", "message": f"تم اعتماد المستند ({docname}) بنجاح تام."}
+            return {"status": "error", "message": f"المستند ({docname}) معتمد مسبقاً أو ملغي."}
+            
+        elif action == "update":
+            if doc.docstatus != 0:
+                return {"status": "error", "message": f"لا يمكن تعديل مستند معتمد أو ملغي ({docname}) إلا بعد إلغائه أولاً."}
+            
+            if isinstance(data, str):
+                import json
+                try:
+                    data = json.loads(data)
+                except:
+                    pass
+            
+            if isinstance(data, dict):
+                doc.update(data)
+                doc.save()
+                return {"status": "success", "message": f"تم تحديث المستند ({docname}) بنجاح."}
+            else:
+                return {"status": "error", "message": "البيانات المراد تحديثها غير صالحة."}
+                
+        elif action == "delete":
+            if doc.docstatus == 0:
+                frapp_doc = frappe.get_doc(doctype, docname)
+                frapp_doc.delete()
+                return {"status": "success", "message": f"تم حذف المستند ({docname}) بنجاح."}
+            return {"status": "error", "message": "لا يمكن حذف مستند معتمد أو ملغي، يجب إلغاؤه أولاً."}
+            
+        else:
+            return {"status": "error", "message": f"الإجراء غير معروف: {action}"}
+            
+    except Exception as e:
+        frappe.log_error(title=f"ERP AI Document Action Error [{action}]", message=frappe.get_traceback())
+        return {"status": "error", "message": str(e)}
+
+# =================================================================
+# 🚀 تسجيل الأدوات في الـ Registry
 # =================================================================
 register_tool(
     name="run_erp_query",
@@ -143,4 +214,32 @@ register_tool(
         }
     },
     func=run_erp_query
+)
+
+register_tool(
+    name="manage_erp_document",
+    description="Use this tool to perform full actions on documents in ERPNext such as canceling, submitting, updating, or deleting documents based on user permissions.",
+    parameters={
+        "doctype": {
+            "type": "string",
+            "description": "The exact Frappe DocType name (e.g., 'Sales Invoice')",
+            "required": True
+        },
+        "docname": {
+            "type": "string",
+            "description": "The unique name or ID of the document (e.g., 'ACC-SINV-2026-00001')",
+            "required": True
+        },
+        "action": {
+            "type": "string",
+            "description": "The action to perform: 'cancel', 'submit', 'update', or 'delete'",
+            "required": True
+        },
+        "data": {
+            "type": "string",
+            "description": "JSON string of fields and values to update if action is 'update'",
+            "required": False
+        }
+    },
+    func=manage_erp_document
 )

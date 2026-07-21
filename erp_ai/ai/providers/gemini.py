@@ -1,7 +1,9 @@
 import json
+import time
 import frappe
 from google import genai
 from google.genai import types
+from google.genai import errors
 
 from erp_ai.ai.registry import get_functions
 from erp_ai.ai.executor import execute_tool
@@ -49,8 +51,7 @@ def _build_messages(message, conversation=None):
 
 def ask_gemini(message: str, conversation=None):
     """
-    الدالة الأساسية المسؤولة عن الـ Streaming وبث النصوص حتة حتة (yield)
-    مؤمنة بالكامل ومحدثة لتوليد تقارير مالية احترافية وتنفيذية بناءً على سؤال المستخدم فقط.
+    الدالة الإنتاجية النهائية للعمل مع المفتاح المدفوع وآلية Retry ذكية
     """
     try:
         settings = frappe.get_single("AI Settings")
@@ -60,16 +61,13 @@ def ask_gemini(message: str, conversation=None):
             yield "API Key is missing."
             return
 
-        client = genai.Client(
-            api_key=api_key,
-            http_options={'api_version': 'v1alpha'}
-        )
+        # الاتصال المباشر والآمن بدون http_options
+        client = genai.Client(api_key=api_key)
 
-        model_name = settings.model or "gemini-2.5-flash"
+        model_name = settings.model or "gemini-1.5-pro"
         raw_functions = get_functions()
         tools_list = [{"function_declarations": [f for f in raw_functions]}] if raw_functions else None
         
-        # تجهيز الـ config الموحد وتوجيه الموديل بأسلوب احترافي ومحلل مالي ذكي
         gen_config = types.GenerateContentConfig(
             tools=tools_list,
             system_instruction="""
@@ -82,14 +80,26 @@ def ask_gemini(message: str, conversation=None):
 
         messages = _build_messages(message, conversation)
 
-        # أول استدعاء للموديل لمعرفة هل سيحتاج أداة أم لا
-        response = client.models.generate_content(
-            model=model_name,
-            contents=messages,
-            config=gen_config
-        )
+        max_retries = 5
+        delay = 2
+        response = None
 
-        function_calls = response.function_calls
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=messages,
+                    config=gen_config
+                )
+                break
+            except (errors.ServerError, errors.APIError) as e:
+                if e.code in [503, 429] and attempt < max_retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                else:
+                    raise e
+
+        function_calls = response.function_calls if response else None
         if function_calls:
             function_call = function_calls[0]
             tool_name = function_call.name
@@ -122,21 +132,37 @@ Strict Professional Presentation Rules:
                 )
             )
 
-            response_stream = client.models.generate_content_stream(model=model_name, contents=messages)
-            for chunk in response_stream:
-                if chunk.text:
-                    yield chunk.text
-            return
+            delay = 2
+            for attempt in range(max_retries):
+                try:
+                    response_stream = client.models.generate_content_stream(model=model_name, contents=messages)
+                    for chunk in response_stream:
+                        if chunk.text:
+                            yield chunk.text
+                    return
+                except (errors.ServerError, errors.APIError) as e:
+                    if e.code in [503, 429] and attempt < max_retries - 1:
+                        time.sleep(delay)
+                        delay *= 2
+                    else:
+                        raise e
 
-        # إذا لم يستدعِ أداة، يتم تشغيل الستريم العادي
         response_stream = client.models.generate_content_stream(
             model=model_name, 
-            contents=messages,
+            contents=messages, 
             config=gen_config
         )
         for chunk in response_stream:
             if chunk.text:
                 yield chunk.text
 
+    except (errors.ServerError, errors.APIError) as e:
+        if e.code == 503:
+            yield "⚠️ خوادم ذكاء جوجل تواجه ضغطاً مرتفعاً، جاري إعادة المحاولة..."
+        elif e.code == 429:
+            yield "⚠️ تم بلوغ الحد الأقصى المؤقت للطلبات المدفوعة، يتم الانتظار قليلاً..."
+        else:
+            yield f"⚠️ خطأ بالاتصال: {e.message}"
+
     except Exception:
-        yield frappe.get_traceback()
+        yield f"حدث خطأ غير متوقع:\n {frappe.get_traceback()}"
