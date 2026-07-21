@@ -401,3 +401,11 @@ body {
 .erp-ai-message tr:nth-child(even) {
     background-color: #f1f5f9;
 }
+#erp-ai-header {
+    user-select: none;
+    -webkit-user-drag: none; /* ده اللي بيمنع المتصفح يفتح الشاشة البيضاء */
+    cursor: grab;
+}
+#erp-ai-header:active {
+    cursor: grabbing;
+}

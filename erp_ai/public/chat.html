@@ -55,11 +55,31 @@
             
         </div>
 
-        <!-- الفوتر وصندوق الإدخال -->
+        <!-- الفوتر وصندوق الإدخال المحدث والمودرن -->
         <div id="erp-ai-footer">
             <div class="erp-ai-input-wrapper">
+                <!-- زرار الـ Attach (أيقونة SVG أنيقة ومفصولة) -->
+                <label for="erp-ai-file-input" id="erp-ai-attach-btn" title="إرفاق ملف">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                </label>
+                <input type="file" id="erp-ai-file-input" style="display: none;" />
+
+                <!-- معاينة الملف المرفق -->
+                <div id="erp-ai-file-preview" style="display: none;"></div>
+
+                <!-- خانة الكتابة -->
                 <textarea id="erp-ai-input" rows="1" placeholder="Ask anything..."></textarea>
-                <button id="erp-ai-send">➜</button>
+                
+                <!-- زر الإرسال -->
+                <button id="erp-ai-send">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
             </div>
         </div>
 
@@ -67,3 +87,5 @@
 
 </body>
 </html>
+
+

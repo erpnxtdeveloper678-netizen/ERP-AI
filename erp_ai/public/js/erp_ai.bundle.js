@@ -9,6 +9,8 @@ class ERPAI {
         this.dragging = false;
         this.dragOffsetX = 0;
         this.dragOffsetY = 0;
+        this.attachedFileContent = null;
+        this.attachedFileName = "";
         this.createButton();
         this.createWindow();
     }
@@ -23,7 +25,11 @@ class ERPAI {
         if (document.getElementById("erp-ai-button")) return;
         const button = document.createElement("div");
         button.id = "erp-ai-button";
-        button.innerHTML = "🤖";
+        button.innerHTML = `
+            <div class="button-logo-inside" style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; font-weight: bold; font-family: inherit;">
+                <span style="color: #2563eb; font-size: 15px;">E</span><span style="color: #0f172a; font-size: 15px;">AI</span>
+            </div>
+        `;
         document.body.appendChild(button);
         button.addEventListener("click", () => this.toggleWindow());
     }
@@ -63,6 +69,30 @@ class ERPAI {
             this.style.height = this.scrollHeight + "px";
         });
 
+        const fileInput = document.getElementById("erp-ai-file-input");
+        const attachBtn = document.getElementById("erp-ai-attach-btn");
+        
+        if (attachBtn && fileInput) {
+            fileInput.addEventListener("change", (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                this.attachedFileName = file.name;
+                const reader = new FileReader();
+
+                reader.onload = (event) => {
+                    this.attachedFileContent = event.target.result;
+                    let previewEl = document.getElementById("erp-ai-file-preview");
+                    if (previewEl) {
+                        previewEl.style.display = "inline-block";
+                        previewEl.innerText = `📎 ${this.attachedFileName}`;
+                    }
+                };
+
+                reader.readAsText(file);
+            });
+        }
+
         document.querySelectorAll(".erp-ai-suggestion").forEach(button => {
             button.addEventListener("click", () => {
                 input.value = button.dataset.message;
@@ -77,10 +107,23 @@ class ERPAI {
         const windowEl = document.getElementById("erp-ai-window");
         const header = document.getElementById("erp-ai-header");
 
+        if (!windowEl || !header) return;
+
+        // منع أي سلوك سحب افتراضي قد يطلقه المتصفح
+        header.addEventListener("dragstart", (e) => e.preventDefault());
+
         header.addEventListener("mousedown", (e) => {
-            if (e.target.tagName === "BUTTON") return;
+            if (e.target.tagName === "BUTTON" || e.target.closest("button")) return;
+            
             this.dragging = true;
             const rect = windowEl.getBoundingClientRect();
+            
+            // تثبيت الإحداثيات الحالية لمنع القفز أو اختفاء الحجم
+            windowEl.style.left = rect.left + "px";
+            windowEl.style.top = rect.top + "px";
+            windowEl.style.right = "auto";
+            windowEl.style.bottom = "auto";
+
             this.dragOffsetX = e.clientX - rect.left;
             this.dragOffsetY = e.clientY - rect.top;
             document.body.style.userSelect = "none";
@@ -90,13 +133,13 @@ class ERPAI {
             if (!this.dragging) return;
             windowEl.style.left = (e.clientX - this.dragOffsetX) + "px";
             windowEl.style.top = (e.clientY - this.dragOffsetY) + "px";
-            windowEl.style.right = "auto";
-            windowEl.style.bottom = "auto";
         });
 
         document.addEventListener("mouseup", () => {
-            this.dragging = false;
-            document.body.style.userSelect = "";
+            if (this.dragging) {
+                this.dragging = false;
+                document.body.style.userSelect = "";
+            }
         });
     }
 
@@ -123,7 +166,7 @@ class ERPAI {
         const input = document.getElementById("erp-ai-input");
         const message = input.value.trim();
 
-        if (!message) return;
+        if (!message && !this.attachedFileContent) return;
 
         input.value = "";
         input.style.height = "auto";
@@ -131,18 +174,37 @@ class ERPAI {
         const welcome = document.getElementById("erp-ai-welcome");
         if (welcome) welcome.style.display = "none";
 
+        let displayMessage = message;
+        if (this.attachedFileName) {
+            displayMessage += `\n[مرفق: ${this.attachedFileName}]`;
+        }
+
         this.messages.push({ role: "user", content: message });
-        this.addMessage(message, "user");
+        this.addMessage(displayMessage, "user");
+
+        let argsPayload = {
+            message: message,
+            conversation: JSON.stringify(this.messages.slice(0, -1))
+        };
+
+        if (this.attachedFileContent) {
+            argsPayload.file_data = this.attachedFileContent;
+            argsPayload.file_name = this.attachedFileName;
+        }
+
+        this.attachedFileContent = null;
+        this.attachedFileName = "";
+        const previewEl = document.getElementById("erp-ai-file-preview");
+        if (previewEl) previewEl.style.display = "none";
+        const fileInput = document.getElementById("erp-ai-file-input");
+        if (fileInput) fileInput.value = "";
 
         this.showTyping();
 
         try {
             const response = await frappe.call({
                 method: "erp_ai.api.ask",
-                args: {
-                    message: message,
-                    conversation: JSON.stringify(this.messages.slice(0, -1))
-                }
+                args: argsPayload
             });
 
             this.hideTyping();
@@ -207,7 +269,7 @@ class ERPAI {
 
         const avatar = document.createElement("div");
         avatar.className = "erp-ai-avatar";
-        avatar.innerHTML = sender === "user" ? "👤" : "🤖";
+        avatar.innerHTML = sender === "user" ? "👤" : '<div style="font-size: 11px; font-weight: bold; color: #2563eb; display: flex; align-items: center; justify-content: center;">AI</div>';
 
         const bubble = document.createElement("div");
         bubble.className = "erp-ai-message " + sender;
@@ -285,7 +347,7 @@ class ERPAI {
         row.id = "erp-ai-typing";
         row.className = "erp-ai-row assistant";
         row.innerHTML = `
-            <div class="erp-ai-avatar">🤖</div>
+            <div class="erp-ai-avatar" style="font-size: 11px; font-weight: bold; color: #2563eb; display: flex; align-items: center; justify-content: center;">AI</div>
             <div class="erp-ai-message assistant">
                 <div class="erp-ai-loading-dots"><span></span><span></span><span></span></div>
             </div>
@@ -310,7 +372,6 @@ $(function () {
     window.erp_ai = new ERPAI();
 });
 
-// دالة التحميل العامة
 window.downloadReportCSV = function(jsonData, filename = "erp_report.csv") {
     if (typeof jsonData === "string") {
         try {

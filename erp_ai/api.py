@@ -4,7 +4,7 @@ import csv
 import io
 
 @frappe.whitelist()
-def ask(message, conversation=None):
+def ask(message, conversation=None, file_data=None, file_name=None):
     if conversation:
         try:
             conversation = json.loads(conversation)
@@ -13,13 +13,18 @@ def ask(message, conversation=None):
     else:
         conversation = []
 
+    # دمج محتوى الملف المرفق مع رسالة المستخدم إذا وجد
+    full_message = message or ""
+    if file_data:
+        full_message = f"[مرفق ملف: {file_name}]\nمحتوى الملف:\n{file_data}\n\nسؤال المستخدم:\n{full_message}"
+
     from erp_ai.ai.service import ask_ai
     
     # بما أن الـ ask_ai بيرجع Generator (بسبب الـ yield)، 
     # هنجمع النص أو نعمل هاندلينگ للـ streaming لو متاح، 
     # أو نخليه يرجع النص كاملاً لو الـ API محتاج Response مباشر.
     try:
-        response_generator = ask_ai(message=message, conversation=conversation)
+        response_generator = ask_ai(message=full_message, conversation=conversation)
         # لو الـ ask_ai بترجع generator، بنجمع الكتل (chunks) مع بعضها
         if hasattr(response_generator, "__iter__") and not isinstance(response_generator, (str, dict, list)):
             reply = "".join([chunk for chunk in response_generator if chunk])
