@@ -1,12 +1,8 @@
 import frappe
 
-# القاموس المركزي لتخزين الأدوات المسجلة
 TOOLS = {}
 
 def register_tool(name, description, parameters, func):
-    """
-    Registers a tool in the central AI registry.
-    """
     TOOLS[name] = {
         "name": name,
         "description": description,
@@ -15,22 +11,12 @@ def register_tool(name, description, parameters, func):
     }
 
 def get_tools():
-    """
-    Returns the raw TOOLS dictionary.
-    """
     return TOOLS
 
 def list_tools():
-    """
-    Returns a list of all registered tool metadata.
-    """
     return list(TOOLS.values())
 
 def get_functions():
-    """
-    Returns the tools formatted as raw dictionaries (JSON Schema)
-    as required by the new Client SDK.
-    """
     functions_list = []
     for tool in TOOLS.values():
         param_properties = {}
@@ -57,20 +43,15 @@ def get_functions():
                 "required": required_fields if required_fields else None
             }
         })
-    
     return functions_list
 
 def get_tool(name):
-    """
-    Returns a specific tool by its name.
-    """  
     return TOOLS.get(name)
-
 
 
 def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
     """
-    دالة آمنة تتيح للـ AI جلب البيانات مباشرة من أي DocType في ERPNext
+    دالة ذكية وآمنة لجلب البيانات والعدد الإجمالي من أي DocType
     """
     try:
         order_by = kwargs.get("order_by") or kwargs.get("orderby") or "creation desc"
@@ -92,6 +73,9 @@ def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
         if not fields or fields == ["name"]:
             fields = ["name", "customer", "grand_total", "posting_date"] if doctype == "Sales Invoice" else ["*"]
 
+        # حساب العدد الإجمالي الفعلي لتجنب الخلط بين الصفر والأخطاء
+        total_count = frappe.db.count(doctype, filters=filters)
+
         data = frappe.get_list(
             doctype,
             fields=fields,
@@ -99,40 +83,74 @@ def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
             order_by=order_by,
             limit_page_length=limit
         )
-        return data
+
+        return {
+            "total_count": total_count,
+            "data": data
+        }
     except Exception as e:
         return {"error": str(e)}
 
 
-
-def manage_erp_document(doctype, docname, action, data=None):
+def universal_fallback_search(doctype=None, txt=None, filters=None, limit=10):
     """
-    دالة موحدة وذكية لتنفيذ أي إجراء (action) على المستندات بناءً على صلاحيات المستخدم الفعلي:
-    - cancel: إلغاء المستند
-    - submit: اعتماد المستند
-    - update: تحديث حقول معينة في المستند
-    - delete: حذف المستند (إذا كان مسودة)
+    Universal Fallback Tool: أداة احتياطية شاملة لجلب أي بيانات من أي Doctype عند الحاجة.
     """
     try:
-        action = action.lower().strip()
+        if not doctype:
+            doctype = "ToDo"
+            
+        if isinstance(filters, str):
+            filters = frappe.parse_json(filters)
         
-        # 1. تحديد الصلاحية المطلوبة بناءً على نوع الإجراء
+        if not filters:
+            filters = {}
+
+        if txt and not filters:
+            meta = frappe.get_meta(doctype)
+            search_field = meta.get_search_fields()[0] if meta.get_search_fields() else "name"
+            filters[search_field] = ["like", f"%{txt}%"]
+
+        data = frappe.get_all(
+            doctype,
+            filters=filters,
+            fields=["*"],
+            limit_page_length=int(limit),
+            order_by="modified desc"
+        )
+
+        return {
+            "status": "success",
+            "doctype": doctype,
+            "total_count": len(data),
+            "data": data
+        }
+
+    except Exception as e:
+        frappe.log_error(message=str(e), title="Universal Fallback Tool Error")
+        return {
+            "status": "error",
+            "message": str(e),
+            "data": []
+        }
+
+
+def manage_erp_document(doctype, docname, action, data=None):
+    try:
+        action = action.lower().strip()
         perm_type_map = {
             "cancel": "cancel",
             "submit": "submit",
             "update": "write",
             "delete": "delete"
         }
-        
         required_perm = perm_type_map.get(action, "write")
         
-        # 2. التحقق من صلاحيات المستخدم الحالي على المستند
         if not frappe.has_permission(doctype, required_perm, docname):
             return {"status": "error", "message": f"عذراً، لا تملك صلاحية ({action}) على هذا المستند ({docname})."}
         
         doc = frappe.get_doc(doctype, docname)
         
-        # 3. تنفيذ الإجراء المطلوب
         if action == "cancel":
             if doc.docstatus == 1:
                 doc.cancel()
@@ -180,11 +198,11 @@ def manage_erp_document(doctype, docname, action, data=None):
 
 register_tool(
     name="run_erp_query",
-    description="Use this tool to fetch records, data, analytics, and lists from any ERPNext DocType like Sales Invoice, Customer, Item, Purchase Invoice, etc.",
+    description="Use this tool to fetch records, data, analytics, and lists from any ERPNext DocType. Returns both total_count and data records.",
     parameters={
         "doctype": {
             "type": "string",
-            "description": "The exact Frappe DocType name (e.g., 'Sales Invoice', 'Customer')",
+            "description": "The exact Frappe DocType name (e.g., 'Sales Invoice', 'Customer', 'Freight')",
             "required": True
         },
         "fields": {
@@ -199,7 +217,7 @@ register_tool(
         },
         "order_by": {
             "type": "string",
-            "description": "Field to sort by (e.g., 'grand_total desc')",
+            "description": "Field to sort by (e.g., 'creation desc')",
             "required": False
         },
         "limit": {
@@ -212,17 +230,45 @@ register_tool(
 )
 
 register_tool(
+    name="universal_fallback_search",
+    description="Universal fallback tool to search and retrieve data or records from any DocType when specific queries fail or a broad search is needed.",
+    parameters={
+        "doctype": {
+            "type": "string",
+            "description": "The Frappe DocType to search within",
+            "required": False
+        },
+        "txt": {
+            "type": "string",
+            "description": "Search keyword",
+            "required": False
+        },
+        "filters": {
+            "type": "string",
+            "description": "JSON filters string",
+            "required": False
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Limit records",
+            "required": False
+        }
+    },
+    func=universal_fallback_search
+)
+
+register_tool(
     name="manage_erp_document",
     description="Use this tool to perform full actions on documents in ERPNext such as canceling, submitting, updating, or deleting documents based on user permissions.",
     parameters={
         "doctype": {
             "type": "string",
-            "description": "The exact Frappe DocType name (e.g., 'Sales Invoice')",
+            "description": "The exact Frappe DocType name",
             "required": True
         },
         "docname": {
             "type": "string",
-            "description": "The unique name or ID of the document (e.g., 'ACC-SINV-2026-00001')",
+            "description": "The unique name or ID of the document",
             "required": True
         },
         "action": {
