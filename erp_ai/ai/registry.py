@@ -1,3 +1,4 @@
+import json
 import frappe
 
 TOOLS = {}
@@ -51,24 +52,25 @@ def get_tool(name):
 
 def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
     """
-    دالة ذكية وآمنة لجلب البيانات والعدد الإجمالي من أي DocType
+    دالة ذكية وآمنة لجلب البيانات والعدد الإجمالي من أي DocType مع تحسينات الأداء
     """
     try:
         order_by = kwargs.get("order_by") or kwargs.get("orderby") or "creation desc"
 
         if isinstance(fields, str):
-            import json
             try:
                 fields = json.loads(fields)
             except:
                 fields = [f.strip() for f in fields.split(",")]
             
         if isinstance(filters, str):
-            import json
             try:
                 filters = json.loads(filters)
             except:
                 filters = {}
+
+        # فرض حد أقصى للـ limit لمنع استهلاك الذاكرة العشوائي
+        limit = min(int(limit or 20), 100)
 
         if not fields or fields == ["name"]:
             fields = ["name", "customer", "grand_total", "posting_date"] if doctype == "Sales Invoice" else ["*"]
@@ -89,6 +91,7 @@ def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
             "data": data
         }
     except Exception as e:
+        frappe.log_error(title="ERP AI Query Error", message=str(e))
         return {"error": str(e)}
 
 
@@ -106,6 +109,8 @@ def universal_fallback_search(doctype=None, txt=None, filters=None, limit=10):
         if not filters:
             filters = {}
 
+        limit = min(int(limit or 10), 50)
+
         if txt and not filters:
             meta = frappe.get_meta(doctype)
             search_field = meta.get_search_fields()[0] if meta.get_search_fields() else "name"
@@ -115,7 +120,7 @@ def universal_fallback_search(doctype=None, txt=None, filters=None, limit=10):
             doctype,
             filters=filters,
             fields=["*"],
-            limit_page_length=int(limit),
+            limit_page_length=limit,
             order_by="modified desc"
         )
 
@@ -168,7 +173,6 @@ def manage_erp_document(doctype, docname, action, data=None):
                 return {"status": "error", "message": f"لا يمكن تعديل مستند معتمد أو ملغي ({docname}) إلا بعد إلغائه أولاً."}
             
             if isinstance(data, str):
-                import json
                 try:
                     data = json.loads(data)
                 except:
@@ -196,13 +200,20 @@ def manage_erp_document(doctype, docname, action, data=None):
         return {"status": "error", "message": str(e)}
 
 
+# تسجيل الأدوات مع التعليمات والوصف المحسّن للذكاء الاصطناعي
 register_tool(
     name="run_erp_query",
-    description="Use this tool to fetch records, data, analytics, and lists from any ERPNext DocType. Returns both total_count and data records.",
+    description=(
+        "Use this tool to fetch records, data, analytics, and lists from any ERPNext DocType. "
+        "CRITICAL INSTRUCTION FOR ANALYTICS/SUMMARIES: If the user asks for 'top selling products', "
+        "'best customers', 'total sales', or any analytical question, DO NOT just fetch raw records or give up. "
+        "You MUST fetch the relevant transaction child tables (e.g., 'Sales Invoice Item' for items) "
+        "with appropriate fields (like item_code, qty, amount) so you can process and present the exact answer."
+    ),
     parameters={
         "doctype": {
             "type": "string",
-            "description": "The exact Frappe DocType name (e.g., 'Sales Invoice', 'Customer', 'Freight')",
+            "description": "The exact Frappe DocType name (e.g., 'Sales Invoice Item' for products/items analysis, 'Sales Invoice' for invoices, 'Customer' for customers)",
             "required": True
         },
         "fields": {

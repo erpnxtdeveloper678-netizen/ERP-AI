@@ -9,8 +9,6 @@ DEFAULT_MODEL = "claude-sonnet-5"
 
 # Keywords that MIGHT indicate the user wants a permanently saved system
 # Report (as opposed to just wanting to see data/a table in the chat).
-# Only when one of these appears do we pay the cost of an extra classification
-# call — everything else skips straight to a normal chat reply.
 REPORT_TRIGGER_KEYWORDS = ["report", "تقرير", "report builder"]
 
 GENERIC_ERROR_MESSAGE = {
@@ -22,10 +20,6 @@ EMPTY_REPLY_MESSAGE = {
     "Arabic": "عذراً، لم يتم استلام رد من المساعد الذكي. برجاء إعادة صياغة سؤالك أو المحاولة مرة أخرى.",
 }
 
-# Hidden marker embedded in a confirmation-prompt reply so we can recognise,
-# statelessly, that the user's NEXT message is answering a pending
-# report-creation confirmation (we just re-read it back out of the
-# conversation history the frontend already sends with every request).
 PENDING_MARKER_PREFIX = "<!--ERP_AI_PENDING_REPORT:"
 PENDING_MARKER_SUFFIX = "-->"
 
@@ -97,13 +91,18 @@ def _detect_lang(text: str) -> str:
     return "English"
 
 
+def trim_chat_history(history, max_messages=15):
+    """
+    تحسين الأداء: تقليم سجل المحادثة لمنع استنزاف الذاكرة والحفاظ على حجم سياق مناسب
+    """
+    if not history or not isinstance(history, list):
+        return []
+    if len(history) > max_messages:
+        return history[-max_messages:]
+    return history
+
+
 def _extract_pending_confirmation(conversation):
-    """
-    Looks at the most recent assistant message in the conversation history
-    for a hidden pending-report marker, and returns the embedded dict if
-    found, else None. This makes confirmation stateless — no DB/session
-    storage needed, since the frontend already resends full history.
-    """
     if not conversation:
         return None
     for msg in reversed(conversation):
@@ -114,7 +113,7 @@ def _extract_pending_confirmation(conversation):
             continue
         start = content.find(PENDING_MARKER_PREFIX)
         if start == -1:
-            return None  # most recent assistant turn wasn't a pending confirmation
+            return None  
         end = content.find(PENDING_MARKER_SUFFIX, start)
         if end == -1:
             return None
@@ -141,14 +140,6 @@ def _build_pending_marker(payload: dict) -> str:
 
 
 def _get_ai_client_and_model():
-    """Returns (client, model_name) or (None, None) if not configured.
-
-    NOTE: this function was missing from the original file, which meant
-    _classify_intent() always hit a NameError, was silently swallowed by
-    its own try/except, and therefore *every* "create a report" request
-    silently fell back to {"action": "chat"} — the report-creation feature
-    never actually ran, with no visible error to the user.
-    """
     settings = frappe.get_single("AI Settings")
     api_key = settings.get_password("api_key")
     if not api_key:
@@ -159,12 +150,6 @@ def _get_ai_client_and_model():
 
 
 def _classify_intent(message: str):
-    """
-    Uses forced tool-calling (not free-text JSON) so the response is always
-    a valid structured object, with zero conflict against the main
-    assistant's "never output raw JSON" system prompt — this is a fully
-    separate, minimal call dedicated only to classification.
-    """
     try:
         client, model_name = _get_ai_client_and_model()
         if not client:
@@ -188,17 +173,10 @@ def _classify_intent(message: str):
 
 
 def _propose_report_creation(intent: dict, full_message: str, conversation, lang: str):
-    """
-    Validates the extracted report details and, if everything checks out,
-    returns a CONFIRMATION PROMPT (with a hidden pending marker) instead of
-    creating anything yet. Nothing is written to the database at this stage.
-    """
     report_title = (intent.get("report_title") or "").strip()
     ref_doctype = (intent.get("ref_doctype") or "").strip()
     module = (intent.get("module") or "").strip()
 
-    # If the model didn't confidently extract everything needed, don't guess —
-    # fall back to a normal conversational reply instead.
     if not report_title or not ref_doctype or not module:
         return call_ai_service(full_message, conversation)
 
@@ -237,9 +215,6 @@ def _propose_report_creation(intent: dict, full_message: str, conversation, lang
         )
         return {"reply": msg}
 
-    # Be upfront that column layout still needs manual setup — a bare Report
-    # Builder record has no columns/sorting/filters yet, so it won't show
-    # "top X" style results until configured in the Report Builder UI.
     marker = _build_pending_marker({
         "report_title": report_title,
         "ref_doctype": ref_doctype,
@@ -270,10 +245,6 @@ def _propose_report_creation(intent: dict, full_message: str, conversation, lang
 
 
 def _create_report_now(pending: dict, lang: str):
-    """
-    Performs the actual creation, re-validating everything (state may have
-    changed between the proposal and the confirmation).
-    """
     report_title = (pending.get("report_title") or "").strip()
     ref_doctype = (pending.get("ref_doctype") or "").strip()
     module = (pending.get("module") or "").strip()
@@ -319,7 +290,7 @@ def _create_report_now(pending: dict, lang: str):
             "is_standard": "No",
             "module": module,
         })
-        doc.insert()  # respects the current user's permissions
+        doc.insert()
 
         msg = (
             f"✅ Report '{report_title}' was created for {ref_doctype} in the {module} module. "
@@ -349,7 +320,7 @@ def _create_report_now(pending: dict, lang: str):
 
 
 @frappe.whitelist()
-def ask(message, conversation=None, file_data=None, file_name=None):
+def ask(message, conversation=None, file_data=None, file_name=None, conversation_name=None):
     if conversation:
         try:
             conversation = json.loads(conversation)
@@ -358,43 +329,55 @@ def ask(message, conversation=None, file_data=None, file_name=None):
     else:
         conversation = []
 
+    # تقليم المحادثة لتوفير الذاكرة وتحسين الأداء
+    conversation = trim_chat_history(conversation)
+
     full_message = message or ""
     if file_data:
         full_message = f"[Attached File: {file_name}]\nFile Content:\n{file_data}\n\nUser Question:\n{full_message}"
-        # A file attachment is almost always a question about the file's
-        # content, not a request to create a system Report — skip straight
-        # to a normal chat reply.
-        return call_ai_service(full_message, conversation)
+        res = call_ai_service(full_message, conversation)
+    else:
+        lang = _detect_lang(full_message)
 
-    lang = _detect_lang(full_message)
+        pending = _extract_pending_confirmation(conversation)
+        if pending:
+            if _is_affirmative(full_message):
+                res = _create_report_now(pending, lang)
+            elif _is_negative(full_message):
+                msg = (
+                    "No problem, I won't create that report."
+                    if lang == "English" else
+                    "تمام، مش هعمل التقرير ده."
+                )
+                res = {"reply": msg}
+            else:
+                res = call_ai_service(full_message, conversation)
+        else:
+            lower_message = full_message.lower()
+            looks_like_report_request = any(kw in lower_message for kw in REPORT_TRIGGER_KEYWORDS)
 
-    # 1) Is this message answering a pending report-creation confirmation
-    #    from the previous turn?
-    pending = _extract_pending_confirmation(conversation)
-    if pending:
-        if _is_affirmative(full_message):
-            return _create_report_now(pending, lang)
-        if _is_negative(full_message):
-            msg = (
-                "No problem, I won't create that report."
-                if lang == "English" else
-                "تمام، مش هعمل التقرير ده."
-            )
-            return {"reply": msg}
-        # Ambiguous reply to a pending confirmation — don't guess; treat it
-        # as a fresh message instead of silently creating or discarding.
+            if looks_like_report_request:
+                intent = _classify_intent(full_message)
+                if intent.get("action") == "create_report":
+                    res = _propose_report_creation(intent, full_message, conversation, lang)
+                else:
+                    res = call_ai_service(full_message, conversation)
+            else:
+                res = call_ai_service(full_message, conversation)
 
-    # 2) Otherwise, only pay for intent classification if the message
-    #    plausibly mentions a report at all.
-    lower_message = full_message.lower()
-    looks_like_report_request = any(kw in lower_message for kw in REPORT_TRIGGER_KEYWORDS)
+    # حفظ وتحديث المحادثة تلقائياً في الـ DocType (AI Conversation)
+    try:
+        updated_conversation = list(conversation)
+        updated_conversation.append({"role": "user", "content": full_message})
+        updated_conversation.append({"role": "assistant", "content": res.get("reply", "")})
+        
+        save_res = save_conversation(conversation_name=conversation_name, messages=updated_conversation)
+        if save_res.get("status") == "success":
+            res["conversation_name"] = save_res.get("name")
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Auto Save Conversation Error")
 
-    if looks_like_report_request:
-        intent = _classify_intent(full_message)
-        if intent.get("action") == "create_report":
-            return _propose_report_creation(intent, full_message, conversation, lang)
-
-    return call_ai_service(full_message, conversation)
+    return res
 
 
 def call_ai_service(message, conversation):
@@ -402,11 +385,6 @@ def call_ai_service(message, conversation):
     reply = ""
 
     try:
-        # Import kept inside the try block (moved from module scope) so that
-        # if erp_ai.ai.service fails to import or doesn't expose the
-        # expected name, the user gets the normal graceful fallback message
-        # below instead of an unhandled 500 error from the whitelisted
-        # endpoint.
         from erp_ai.ai.service import ask_ai
 
         response_generator = ask_ai(message=message, conversation=conversation)
@@ -426,10 +404,90 @@ def call_ai_service(message, conversation):
 
 
 @frappe.whitelist()
+def save_conversation(conversation_name=None, title=None, messages=None):
+    """
+    إنشاء أو تحديث محادثة في قاعدة البيانات (AI Conversation DocType)
+    """
+    try:
+        if isinstance(messages, str):
+            messages_json = messages
+            messages_list = json.loads(messages)
+        else:
+            messages_list = messages or []
+            messages_json = json.dumps(messages_list, ensure_ascii=False)
+
+        if not title and messages_list:
+            first_msg = next((m.get("content") for m in messages_list if m.get("role") == "user"), "New Conversation")
+            title = (first_msg[:30] + "...") if len(first_msg) > 30 else first_msg
+
+        if conversation_name and frappe.db.exists("AI Conversation", conversation_name):
+            doc = frappe.get_doc("AI Conversation", conversation_name)
+            doc.messages = messages_json
+            doc.last_activity = frappe.utils.now_datetime()
+            if title:
+                doc.title = title
+            doc.save(ignore_permissions=True)
+            return {"status": "success", "name": doc.name}
+        else:
+            doc = frappe.get_doc({
+                "doctype": "AI Conversation",
+                "title": title or "New Conversation",
+                "user": frappe.session.user,
+                "status": "Open",
+                "started_on": frappe.utils.now_datetime(),
+                "last_activity": frappe.utils.now_datetime(),
+                "messages": messages_json
+            })
+            doc.insert(ignore_permissions=True)
+            return {"status": "success", "name": doc.name}
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Save Conversation Error")
+        return {"status": "error", "message": str(e)}
+
+
+@frappe.whitelist()
+def get_user_conversations():
+    """
+    جلب قائمة المحادثات الخاصة بالمستخدم الحالي لعرضها في القائمة الجانبية للشات
+    """
+    try:
+        conversations = frappe.get_all(
+            "AI Conversation",
+            filters={"user": frappe.session.user},
+            fields=["name", "title", "modified", "status"],
+            order_by="modified desc",
+            limit=20
+        )
+        return {"status": "success", "data": conversations}
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Get User Conversations Error")
+        return {"status": "error", "data": []}
+
+
+@frappe.whitelist()
+def load_conversation(conversation_name):
+    """
+    تحميل رسائل محادثة سابقة معينة بناءً على اسمها في قاعدة البيانات
+    """
+    try:
+        if not frappe.has_permission("AI Conversation", "read", conversation_name):
+            return {"status": "error", "message": "لا تملك صلاحية قراءة هذه المحادثة."}
+            
+        doc = frappe.get_doc("AI Conversation", conversation_name)
+        messages = json.loads(doc.messages) if doc.messages else []
+        return {
+            "status": "success",
+            "name": doc.name,
+            "title": doc.title,
+            "messages": messages
+        }
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Load Conversation Error")
+        return {"status": "error", "message": str(e)}
+
+
+@frappe.whitelist()
 def export_data_to_csv(data_json, filename="erp_report.csv"):
-    """
-    دالة تصدير البيانات إلى ملف CSV للعميل مباشرة من الشات
-    """
     try:
         if isinstance(data_json, str):
             data = frappe.parse_json(data_json)
@@ -464,4 +522,7 @@ def export_data_to_csv(data_json, filename="erp_report.csv"):
         }
     except Exception:
         frappe.log_error(frappe.get_traceback(), "CSV Export Error")
-        return {"status": "error", "message": "حدث خطأ أثناء تصدير الملف. برجاء المحاولة مرة أخرى."}
+        return {
+            "status": "error",
+            "message": "حدث خطأ أثناء تصدير الملف. برجاء المحاولة مرة أخرى."
+        }
