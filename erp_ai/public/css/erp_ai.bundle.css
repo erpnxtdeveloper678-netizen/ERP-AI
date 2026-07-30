@@ -160,6 +160,29 @@
     min-width: 0;
 }
 
+#erp-ai-toggle-sidebar {
+    width: 26px;
+    height: 26px;
+    border: none;
+    background: transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--erp-slate);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 140ms var(--erp-ease), color 140ms var(--erp-ease);
+}
+#erp-ai-toggle-sidebar:hover {
+    background: var(--erp-surface-soft);
+    color: var(--erp-accent);
+}
+#erp-ai-toggle-sidebar.active {
+    background: var(--erp-accent-soft);
+    color: var(--erp-accent);
+}
+
 #erp-ai-logo {
     width: 34px;
     height: 34px;
@@ -232,6 +255,105 @@
 #erp-ai-close:hover {
     background: #FEE2E2;
     color: #DC2626;
+}
+
+/* ------------------------------------------------------------------------
+   Main row: sidebar + chat column, side by side from the start
+   (no runtime DOM manipulation — the sidebar is just collapsed via CSS)
+   ------------------------------------------------------------------------ */
+#erp-ai-main-row {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    overflow: hidden;
+}
+
+#erp-ai-sidebar {
+    width: 0;
+    flex-shrink: 0;
+    overflow: hidden;
+    background: var(--erp-surface-soft);
+    border-right: 1px solid var(--erp-border);
+    display: flex;
+    flex-direction: column;
+    transition: width 220ms var(--erp-ease);
+}
+#erp-ai-sidebar.open {
+    width: 160px;
+}
+
+#erp-ai-sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 10px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--erp-slate);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+#erp-ai-new-chat {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    border: 1px solid var(--erp-border);
+    background: var(--erp-surface);
+    color: var(--erp-accent);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 7px;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 140ms var(--erp-ease), border-color 140ms var(--erp-ease);
+}
+#erp-ai-new-chat:hover {
+    background: var(--erp-accent-soft);
+    border-color: var(--erp-accent);
+}
+
+#erp-ai-conversations-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 4px 8px;
+}
+
+.erp-ai-conv-item {
+    padding: 7px 8px;
+    font-size: 11px;
+    color: var(--erp-ink);
+    border-radius: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background 140ms var(--erp-ease);
+}
+.erp-ai-conv-item:hover {
+    background: var(--erp-accent-soft);
+    color: var(--erp-accent);
+}
+.erp-ai-conv-item.active {
+    background: var(--erp-accent-soft);
+    color: var(--erp-accent);
+    font-weight: 600;
+}
+
+.erp-ai-sidebar-empty {
+    padding: 10px 8px;
+    font-size: 10.5px;
+    color: var(--erp-slate-soft);
+    text-align: center;
+    white-space: normal;
+}
+
+#erp-ai-chat-column {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
 }
 
 /* ------------------------------------------------------------------------
@@ -514,4 +636,14 @@
         animation: none !important;
         transition: none !important;
     }
+}
+#erp-ai-sidebar {
+    width: 0;
+    overflow: hidden;
+    transition: width 0.3s ease;
+    /* باقي التنسيقات الخاصة بالقائمة */
+}
+
+#erp-ai-sidebar.open {
+    width: 220px; /* أو العرض المناسب لك */
 }

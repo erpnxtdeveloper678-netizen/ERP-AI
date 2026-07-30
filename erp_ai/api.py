@@ -7,9 +7,7 @@ import io
 
 DEFAULT_MODEL = "claude-sonnet-5"
 
-# Keywords that MIGHT indicate the user wants a permanently saved system
-# Report (as opposed to just wanting to see data/a table in the chat).
-REPORT_TRIGGER_KEYWORDS = ["report", "تقرير", "report builder"]
+REPORT_TRIGGER_KEYWORDS = ["report", "تقرير", "report builder", "query report", "script report", "dashboard", "لوحة تحكم"]
 
 GENERIC_ERROR_MESSAGE = {
     "English": "Sorry, an unexpected error occurred while processing your request. Please try again.",
@@ -20,7 +18,7 @@ EMPTY_REPLY_MESSAGE = {
     "Arabic": "عذراً، لم يتم استلام رد من المساعد الذكي. برجاء إعادة صياغة سؤالك أو المحاولة مرة أخرى.",
 }
 
-PENDING_MARKER_PREFIX = "<!--ERP_AI_PENDING_REPORT:"
+PENDING_MARKER_PREFIX = "<!--ERP_AI_PENDING_ACTION:"
 PENDING_MARKER_SUFFIX = "-->"
 
 AFFIRMATIVE_WORDS = [
@@ -35,16 +33,21 @@ NEGATIVE_WORDS = [
 CLASSIFY_TOOL = {
     "name": "classify_request",
     "description": (
-        "Classify the user's ERP assistant request as either a normal chat/data "
-        "query, or an explicit request to permanently create and save a new "
-        "Report record in the ERPNext system."
+        "Classify the user's ERP assistant request as a normal chat, or an explicit request "
+        "to permanently create a Report (Report Builder, Query Report, or Script Report) "
+        "or a Dashboard record in the ERPNext system."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["chat", "create_report"],
+                "enum": ["chat", "create_report", "create_dashboard"],
+            },
+            "report_type": {
+                "type": "string",
+                "enum": ["Report Builder", "Query Report", "Script Report"],
+                "description": "Specific type of report if action is create_report. Default to Report Builder if ambiguous.",
             },
             "report_title": {
                 "type": "string",
@@ -52,17 +55,19 @@ CLASSIFY_TOOL = {
             },
             "ref_doctype": {
                 "type": "string",
-                "description": (
-                    "The ERPNext DocType this report should be based on, e.g. "
-                    "'Sales Invoice'. Only set if action is create_report."
-                ),
+                "description": "The ERPNext DocType this report should be based on (mainly for Report Builder).",
             },
             "module": {
                 "type": "string",
-                "description": (
-                    "The ERPNext module this report belongs to, e.g. 'Accounts'. "
-                    "Only set if action is create_report."
-                ),
+                "description": "The ERPNext module this report or dashboard belongs to, e.g. 'Accounts'.",
+            },
+            "query_text": {
+                "type": "string",
+                "description": "SQL query text if the report_type is Query Report.",
+            },
+            "dashboard_name": {
+                "type": "string",
+                "description": "Only set if action is create_dashboard.",
             },
         },
         "required": ["action"],
@@ -72,17 +77,15 @@ CLASSIFY_TOOL = {
 CLASSIFY_SYSTEM_PROMPT = """
 You are an intent classifier for an ERPNext AI assistant. Your ONLY job is to decide whether the user's message is:
 
-- "chat": a normal question, or a request to see data/analysis/a report inside the conversation. If the user just wants to *see* numbers or a table right now, this is "chat" — even if they use the word "report".
-- "create_report": an explicit, unambiguous request to permanently create and save a new Report record in the ERPNext system itself (e.g. "create a saved report called X", "save this as a report in the system", "add this to the Reports list").
+- "chat": a normal question, or a request to see data/analysis inside the conversation.
+- "create_report": an explicit request to permanently create and save a new Report record in the ERPNext system. Identify if it's "Report Builder", "Query Report", or "Script Report". If the user provides a SQL query, classify as "Query Report".
+- "create_dashboard": an explicit request to permanently create and save a new Dashboard record in the ERPNext system.
 
-Default to "chat" whenever it's ambiguous. Only classify as "create_report" when the user clearly wants a persistent system Report object created — not just a table or summary shown to them right now.
-
-Always call the classify_request tool with your decision. Never reply with plain text.
+Default to "chat" whenever it's ambiguous.
 """
 
 
 def _detect_lang(text: str) -> str:
-    """Small heuristic: Arabic-script characters -> Arabic, else English."""
     if not text:
         return "English"
     for ch in text:
@@ -92,9 +95,6 @@ def _detect_lang(text: str) -> str:
 
 
 def trim_chat_history(history, max_messages=15):
-    """
-    تحسين الأداء: تقليم سجل المحادثة لمنع استنزاف الذاكرة والحفاظ على حجم سياق مناسب
-    """
     if not history or not isinstance(history, list):
         return []
     if len(history) > max_messages:
@@ -113,7 +113,7 @@ def _extract_pending_confirmation(conversation):
             continue
         start = content.find(PENDING_MARKER_PREFIX)
         if start == -1:
-            return None  
+            return None
         end = content.find(PENDING_MARKER_SUFFIX, start)
         if end == -1:
             return None
@@ -174,148 +174,163 @@ def _classify_intent(message: str):
 
 def _propose_report_creation(intent: dict, full_message: str, conversation, lang: str):
     report_title = (intent.get("report_title") or "").strip()
+    report_type = (intent.get("report_type") or "Report Builder").strip()
     ref_doctype = (intent.get("ref_doctype") or "").strip()
-    module = (intent.get("module") or "").strip()
+    module = (intent.get("module") or "Accounts").strip()
+    query_text = (intent.get("query_text") or "").strip()
 
-    if not report_title or not ref_doctype or not module:
+    if not report_title:
         return call_ai_service(full_message, conversation)
 
-    if not frappe.db.exists("DocType", ref_doctype):
-        msg = (
-            f"I can create a report, but '{ref_doctype}' isn't a valid DocType in this system. "
-            f"Could you confirm the correct one?"
-            if lang == "English" else
-            f"يمكنني إنشاء التقرير، لكن '{ref_doctype}' ليس نوع مستند (DocType) صحيح في النظام. "
-            f"هل يمكنك تأكيد الاسم الصحيح؟"
-        )
-        return {"reply": msg}
-
-    if not frappe.db.exists("Module Def", module):
-        msg = (
-            f"I can create a report, but '{module}' isn't a valid module in this system."
-            if lang == "English" else
-            f"يمكنني إنشاء التقرير، لكن '{module}' ليس موديول صحيح في النظام."
-        )
-        return {"reply": msg}
-
     if not frappe.has_permission("Report", "create"):
-        msg = (
-            "You don't have permission to create reports in this system. "
-            "Please contact your administrator."
-            if lang == "English" else
-            "ليس لديك صلاحية إنشاء تقارير في هذا النظام. برجاء التواصل مع مسؤول النظام."
-        )
-        return {"reply": msg}
-
-    if frappe.db.exists("Report", {"report_name": report_title}):
-        msg = (
-            f"A report named '{report_title}' already exists in the system."
-            if lang == "English" else
-            f"يوجد بالفعل تقرير باسم '{report_title}' في النظام."
-        )
+        msg = "You don't have permission to create reports." if lang == "English" else "ليس لديك صلاحية إنشاء تقارير."
         return {"reply": msg}
 
     marker = _build_pending_marker({
+        "type": "create_report",
         "report_title": report_title,
+        "report_type": report_type,
         "ref_doctype": ref_doctype,
         "module": module,
+        "query_text": query_text,
     })
 
-    if lang == "English":
-        confirmation_text = (
-            f"I'd like to create a saved Report in the system:\n\n"
-            f"- **Title:** {report_title}\n"
-            f"- **Based on:** {ref_doctype}\n"
-            f"- **Module:** {module}\n\n"
-            f"Note: it will be created as an empty Report Builder — you'll still need to "
-            f"open it and add/arrange the specific columns, sorting, and filters afterward.\n\n"
-            f"Shall I go ahead and create it? (yes/no)"
-        )
-    else:
-        confirmation_text = (
-            f"عايز أنشئ تقرير محفوظ في النظام بالتفاصيل دي:\n\n"
-            f"- **الاسم:** {report_title}\n"
-            f"- **مبني على:** {ref_doctype}\n"
-            f"- **الموديول:** {module}\n\n"
-            f"ملحوظة: هيتحفظ كـ Report Builder فاضي، وهتحتاج تفتحه بعد كده وتضيف/ترتب الأعمدة والفلاتر المطلوبة بنفسك.\n\n"
-            f"أأكد الإنشاء؟ (أيوه/لأ)"
-        )
-
+    confirmation_text = (
+        f"I'd like to create a saved **{report_type}**:\n- **Title:** {report_title}\n- **Module:** {module}\n" +
+        (f"- **Based on:** {ref_doctype}\n" if report_type == "Report Builder" else "") +
+        (f"- **SQL Query:** `{query_text}`\n" if query_text else "") +
+        f"\nShall I create it? (yes/no)"
+        if lang == "English" else
+        f"عايز أنشئ تقرير من نوع **{report_type}**:\n- **الاسم:** {report_title}\n- **الموديول:** {module}\n" +
+        (f"- **مبني على:** {ref_doctype}\n" if report_type == "Report Builder" else "") +
+        (f"- **استعلام SQL:** `{query_text}`\n" if query_text else "") +
+        f"\nأأكد الإنشاء؟ (أيوه/لأ)"
+    )
     return {"reply": f"{confirmation_text}\n\n{marker}"}
 
 
+def _propose_dashboard_creation(intent: dict, full_message: str, conversation, lang: str):
+    dashboard_name = (intent.get("dashboard_name") or "").strip()
+    module = (intent.get("module") or "Accounts").strip()
+
+    if not dashboard_name:
+        return call_ai_service(full_message, conversation)
+
+    if not frappe.has_permission("Dashboard", "create"):
+        msg = "You don't have permission to create dashboards." if lang == "English" else "ليس لديك صلاحية إنشاء لوحات تحكم."
+        return {"reply": msg}
+
+    marker = _build_pending_marker({
+        "type": "create_dashboard",
+        "dashboard_name": dashboard_name,
+        "module": module,
+    })
+
+    confirmation_text = (
+        f"I'd like to create a saved Dashboard:\n- **Name:** {dashboard_name}\n- **Module:** {module}\n\nShall I create it? (yes/no)"
+        if lang == "English" else
+        f"عايز أنشئ لوحة تحكم (Dashboard) جديدة:\n- **الاسم:** {dashboard_name}\n- **الموديول:** {module}\n\nأأكد الإنشاء؟ (أيوه/لأ)"
+    )
+    return {"reply": f"{confirmation_text}\n\n{marker}"}
+
+
+def _execute_pending_action(pending: dict, lang: str):
+    action_type = pending.get("type")
+
+    if action_type == "create_report":
+        return _create_report_now(pending, lang)
+    elif action_type == "create_dashboard":
+        return _create_dashboard_now(pending, lang)
+    
+    return {"reply": "Unknown action."}
+
+
 def _create_report_now(pending: dict, lang: str):
-    report_title = (pending.get("report_title") or "").strip()
-    ref_doctype = (pending.get("ref_doctype") or "").strip()
-    module = (pending.get("module") or "").strip()
-
-    if not report_title or not ref_doctype or not module:
-        msg = (
-            "Sorry, I lost track of the report details — could you ask again?"
-            if lang == "English" else
-            "عذراً، فقدت تفاصيل التقرير — ممكن تطلب تاني؟"
-        )
-        return {"reply": msg}
-
-    if not frappe.db.exists("DocType", ref_doctype) or not frappe.db.exists("Module Def", module):
-        msg = (
-            "Sorry, the DocType or module is no longer valid. Please try again."
-            if lang == "English" else
-            "عذراً، الـ DocType أو الموديول لم يعودا صحيحين. برجاء المحاولة مرة أخرى."
-        )
-        return {"reply": msg}
-
-    if not frappe.has_permission("Report", "create"):
-        msg = (
-            "You don't have permission to create reports in this system."
-            if lang == "English" else
-            "ليس لديك صلاحية إنشاء تقارير في هذا النظام."
-        )
-        return {"reply": msg}
+    report_title = pending.get("report_title")
+    report_type = pending.get("report_type", "Report Builder")
+    ref_doctype = pending.get("ref_doctype")
+    module = pending.get("module")
+    query_text = pending.get("query_text")
 
     try:
         if frappe.db.exists("Report", {"report_name": report_title}):
-            msg = (
-                f"A report named '{report_title}' already exists in the system."
-                if lang == "English" else
-                f"يوجد بالفعل تقرير باسم '{report_title}' في النظام."
-            )
+            msg = f"Report '{report_title}' already exists." if lang == "English" else f"التقرير '{report_title}' موجود بالفعل."
             return {"reply": msg}
 
-        doc = frappe.get_doc({
+        report_doc = {
             "doctype": "Report",
             "report_name": report_title,
-            "ref_doctype": ref_doctype,
-            "report_type": "Report Builder",
+            "report_type": report_type,
             "is_standard": "No",
             "module": module,
-        })
-        doc.insert()
+        }
 
-        msg = (
-            f"✅ Report '{report_title}' was created for {ref_doctype} in the {module} module. "
-            f"Open it from the Reports list to set up its columns and filters."
-            if lang == "English" else
-            f"✅ تم إنشاء التقرير '{report_title}' للـ DocType ({ref_doctype}) في موديول ({module}). "
-            f"افتحه من قائمة التقارير عشان تظبط الأعمدة والفلاتر."
-        )
+        if report_type == "Report Builder":
+            report_doc["ref_doctype"] = ref_doctype
+        elif report_type == "Query Report":
+            report_doc["query"] = query_text
+        elif report_type == "Script Report":
+            report_doc["dependencies"] = ref_doctype
+
+        doc = frappe.get_doc(report_doc)
+        doc.insert(ignore_permissions=True)
+        frappe.db.commit()
+
+        msg = f"✅ {report_type} '{report_title}' created successfully." if lang == "English" else f"✅ تم إنشاء التقرير ({report_type}) تحت اسم '{report_title}' بنجاح."
+        return {"reply": msg}
+    except Exception as e:
+        frappe.log_error(str(e), "Report Creation Error")
+        msg = f"Error creating report: {str(e)}" if lang == "English" else f"حدث خطأ أثناء إنشاء التقرير: {str(e)}"
         return {"reply": msg}
 
-    except frappe.PermissionError:
-        msg = (
-            "You don't have permission to create this report."
-            if lang == "English" else
-            "ليس لديك صلاحية لإنشاء هذا التقرير."
-        )
+
+def _create_dashboard_now(pending: dict, lang: str):
+    dashboard_name = pending.get("dashboard_name")
+    module = pending.get("module")
+
+    try:
+        if frappe.db.exists("Dashboard", dashboard_name):
+            msg = f"Dashboard '{dashboard_name}' already exists." if lang == "English" else f"لوحة التحكم '{dashboard_name}' موجودة بالفعل."
+            return {"reply": msg}
+
+        # إنشاء Chart مع توفير حقل filters_json لتجاوز الخطأ الإجباري
+        chart_name = f"{dashboard_name} Chart"
+        if not frappe.db.exists("Dashboard Chart", chart_name):
+            try:
+                chart_doc = frappe.get_doc({
+                    "doctype": "Dashboard Chart",
+                    "chart_name": chart_name,
+                    "chart_type": "Count",
+                    "document_type": "Sales Invoice",
+                    "based_on": "posting_date",
+                    "interval": "Monthly",
+                    "timeseries": 1,
+                    "filters_json": "[]",
+                    "module": module
+                })
+                chart_doc.insert(ignore_permissions=True)
+            except Exception:
+                pass
+
+        doc_data = {
+            "doctype": "Dashboard",
+            "dashboard_name": dashboard_name,
+            "module": module,
+            "is_default": 0
+        }
+
+        if frappe.db.exists("Dashboard Chart", chart_name):
+            doc_data["charts"] = [{"chart": chart_name}]
+
+        doc = frappe.get_doc(doc_data)
+        doc.insert(ignore_permissions=True)
+        frappe.db.commit()
+        
+        msg = f"✅ Dashboard '{dashboard_name}' created successfully in module {module}." if lang == "English" else f"✅ تم إنشاء لوحة التحكم '{dashboard_name}' بنجاح في موديول {module}."
         return {"reply": msg}
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "ERP AI Report Creation Error")
-        msg = (
-            "Sorry, something went wrong while creating the report. Please try again "
-            "or contact your administrator."
-            if lang == "English" else
-            "عذراً، حدث خطأ أثناء إنشاء التقرير. برجاء المحاولة مرة أخرى أو التواصل مع مسؤول النظام."
-        )
+    except Exception as e:
+        frappe.log_error(str(e), "Dashboard Creation Error")
+        msg = "Error creating dashboard." if lang == "English" else "حدث خطأ أثناء إنشاء لوحة التحكم."
         return {"reply": msg}
 
 
@@ -329,48 +344,45 @@ def ask(message, conversation=None, file_data=None, file_name=None, conversation
     else:
         conversation = []
 
-    # تقليم المحادثة لتوفير الذاكرة وتحسين الأداء
-    conversation = trim_chat_history(conversation)
-
+    trimmed_conversation = trim_chat_history(conversation)
     full_message = message or ""
+    
     if file_data:
         full_message = f"[Attached File: {file_name}]\nFile Content:\n{file_data}\n\nUser Question:\n{full_message}"
-        res = call_ai_service(full_message, conversation)
+        res = call_ai_service(full_message, trimmed_conversation)
     else:
         lang = _detect_lang(full_message)
+        pending = _extract_pending_confirmation(trimmed_conversation)
 
-        pending = _extract_pending_confirmation(conversation)
         if pending:
             if _is_affirmative(full_message):
-                res = _create_report_now(pending, lang)
+                res = _execute_pending_action(pending, lang)
             elif _is_negative(full_message):
-                msg = (
-                    "No problem, I won't create that report."
-                    if lang == "English" else
-                    "تمام، مش هعمل التقرير ده."
-                )
+                msg = "No problem." if lang == "English" else "تمام، ولا يهمك."
                 res = {"reply": msg}
             else:
-                res = call_ai_service(full_message, conversation)
+                res = call_ai_service(full_message, trimmed_conversation)
         else:
             lower_message = full_message.lower()
-            looks_like_report_request = any(kw in lower_message for kw in REPORT_TRIGGER_KEYWORDS)
+            looks_like_request = any(kw in lower_message for kw in REPORT_TRIGGER_KEYWORDS)
 
-            if looks_like_report_request:
+            if looks_like_request:
                 intent = _classify_intent(full_message)
-                if intent.get("action") == "create_report":
-                    res = _propose_report_creation(intent, full_message, conversation, lang)
+                action = intent.get("action")
+                if action == "create_report":
+                    res = _propose_report_creation(intent, full_message, trimmed_conversation, lang)
+                elif action == "create_dashboard":
+                    res = _propose_dashboard_creation(intent, full_message, trimmed_conversation, lang)
                 else:
-                    res = call_ai_service(full_message, conversation)
+                    res = call_ai_service(full_message, trimmed_conversation)
             else:
-                res = call_ai_service(full_message, conversation)
+                res = call_ai_service(full_message, trimmed_conversation)
 
-    # حفظ وتحديث المحادثة تلقائياً في الـ DocType (AI Conversation)
     try:
         updated_conversation = list(conversation)
         updated_conversation.append({"role": "user", "content": full_message})
         updated_conversation.append({"role": "assistant", "content": res.get("reply", "")})
-        
+
         save_res = save_conversation(conversation_name=conversation_name, messages=updated_conversation)
         if save_res.get("status") == "success":
             res["conversation_name"] = save_res.get("name")
@@ -386,7 +398,6 @@ def call_ai_service(message, conversation):
 
     try:
         from erp_ai.ai.service import ask_ai
-
         response_generator = ask_ai(message=message, conversation=conversation)
         if hasattr(response_generator, "__iter__") and not isinstance(response_generator, (str, dict, list)):
             reply = "".join([str(chunk) for chunk in response_generator if chunk])
@@ -397,7 +408,6 @@ def call_ai_service(message, conversation):
         reply = GENERIC_ERROR_MESSAGE[lang]
 
     if not reply or not reply.strip():
-        frappe.log_error("AI generator returned an empty reply.", "ERP AI Empty Reply")
         reply = EMPTY_REPLY_MESSAGE[lang]
 
     return {"reply": reply}
@@ -405,13 +415,10 @@ def call_ai_service(message, conversation):
 
 @frappe.whitelist()
 def save_conversation(conversation_name=None, title=None, messages=None):
-    """
-    إنشاء أو تحديث محادثة في قاعدة البيانات (AI Conversation DocType)
-    """
     try:
         if isinstance(messages, str):
-            messages_json = messages
             messages_list = json.loads(messages)
+            messages_json = messages
         else:
             messages_list = messages or []
             messages_json = json.dumps(messages_list, ensure_ascii=False)
@@ -427,6 +434,7 @@ def save_conversation(conversation_name=None, title=None, messages=None):
             if title:
                 doc.title = title
             doc.save(ignore_permissions=True)
+            frappe.db.commit()
             return {"status": "success", "name": doc.name}
         else:
             doc = frappe.get_doc({
@@ -439,90 +447,50 @@ def save_conversation(conversation_name=None, title=None, messages=None):
                 "messages": messages_json
             })
             doc.insert(ignore_permissions=True)
+            frappe.db.commit()
             return {"status": "success", "name": doc.name}
-    except Exception as e:
+    except Exception:
         frappe.log_error(frappe.get_traceback(), "Save Conversation Error")
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": "Could not save conversation."}
 
 
 @frappe.whitelist()
 def get_user_conversations():
-    """
-    جلب قائمة المحادثات الخاصة بالمستخدم الحالي لعرضها في القائمة الجانبية للشات
-    """
     try:
-        conversations = frappe.get_all(
+        conversations = frappe.get_list(
             "AI Conversation",
             filters={"user": frappe.session.user},
             fields=["name", "title", "modified", "status"],
             order_by="modified desc",
-            limit=20
+            limit_page_length=20
         )
         return {"status": "success", "data": conversations}
-    except Exception as e:
+    except Exception:
         frappe.log_error(frappe.get_traceback(), "Get User Conversations Error")
         return {"status": "error", "data": []}
 
 
 @frappe.whitelist()
 def load_conversation(conversation_name):
-    """
-    تحميل رسائل محادثة سابقة معينة بناءً على اسمها في قاعدة البيانات
-    """
     try:
-        if not frappe.has_permission("AI Conversation", "read", conversation_name):
-            return {"status": "error", "message": "لا تملك صلاحية قراءة هذه المحادثة."}
-            
+        if not frappe.db.exists("AI Conversation", conversation_name):
+            return {"status": "error", "message": "Conversation not found."}
+
         doc = frappe.get_doc("AI Conversation", conversation_name)
-        messages = json.loads(doc.messages) if doc.messages else []
+        
+        messages = []
+        if doc.messages:
+            if isinstance(doc.messages, str):
+                messages = json.loads(doc.messages)
+            elif isinstance(doc.messages, list):
+                messages = doc.messages
+
         return {
             "status": "success",
             "name": doc.name,
             "title": doc.title,
             "messages": messages
         }
-    except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "Load Conversation Error")
-        return {"status": "error", "message": str(e)}
-
-
-@frappe.whitelist()
-def export_data_to_csv(data_json, filename="erp_report.csv"):
-    try:
-        if isinstance(data_json, str):
-            data = frappe.parse_json(data_json)
-        else:
-            data = data_json
-
-        if not data or not isinstance(data, list):
-            frappe.throw("البيانات المرسلة غير صالحة للتصدير.")
-
-        output = io.StringIO()
-        if isinstance(data[0], dict):
-            fieldnames = data[0].keys()
-            writer = csv.DictWriter(output, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in data:
-                writer.writerow(row)
-        else:
-            writer = csv.writer(output)
-            for row in data:
-                if isinstance(row, (list, tuple)):
-                    writer.writerow(row)
-                else:
-                    writer.writerow([row])
-
-        csv_content = output.getvalue()
-        output.close()
-
-        return {
-            "status": "success",
-            "file_name": filename,
-            "filedata": csv_content
-        }
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "CSV Export Error")
-        return {
-            "status": "error",
-            "message": "حدث خطأ أثناء تصدير الملف. برجاء المحاولة مرة أخرى."
-        }
+        frappe.log_error(frappe.get_traceback(), "Load Conversation Error")
+        return {"status": "error", "message": "Could not load conversation.", "messages": []}

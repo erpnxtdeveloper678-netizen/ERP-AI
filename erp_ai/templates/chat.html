@@ -14,12 +14,20 @@
 <span class="btn-e">E</span><span class="btn-ai">AI</span>
 </div>
 </div>
+
 <!-- النافذة الرئيسية للمساعد -->
 <div id="erp-ai-window" role="dialog" aria-label="ERP Assistant chat window">
+
 <!-- الهيدر الرئيسي -->
 <div id="erp-ai-header">
 <div id="erp-ai-title">
-<!-- شعار E AI الدائري المودرن في الهيدر -->
+<button type="button" id="erp-ai-toggle-sidebar" title="Conversations" aria-label="Toggle conversation history">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<line x1="3" y1="6" x2="21" y2="6"></line>
+<line x1="3" y1="12" x2="21" y2="12"></line>
+<line x1="3" y1="18" x2="21" y2="18"></line>
+</svg>
+</button>
 <div id="erp-ai-logo">
 <span class="logo-e">E</span><span class="logo-ai">AI</span>
 </div>
@@ -33,6 +41,30 @@
 <button type="button" id="erp-ai-close" aria-label="Close">✕</button>
 </div>
 </div>
+
+<!-- الصف الرئيسي: القائمة الجانبية + عمود الشات، جنب بعض من البداية -->
+<div id="erp-ai-main-row">
+
+<!-- القائمة الجانبية للمحادثات القديمة (مقفولة افتراضيًا، بتتفتح بالـ CSS width) -->
+<div id="erp-ai-sidebar">
+<div id="erp-ai-sidebar-header">
+<span>Conversations</span>
+<button type="button" id="erp-ai-new-chat" title="Start a new conversation">
+<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+<line x1="12" y1="5" x2="12" y2="19"></line>
+<line x1="5" y1="12" x2="19" y2="12"></line>
+</svg>
+New
+</button>
+</div>
+<div id="erp-ai-conversations-list">
+<div class="erp-ai-sidebar-empty">No conversations yet</div>
+</div>
+</div>
+
+<!-- عمود الشات نفسه (الترحيب + الرسائل + خانة الإدخال) -->
+<div id="erp-ai-chat-column">
+
 <!-- جسم المحادثة والرسائل -->
 <div id="erp-ai-body">
 <!-- شاشة الترحيب بالاقتراحات -->
@@ -40,16 +72,18 @@
 <h2>👋 Welcome to ERP AI</h2>
 <p>How can I assist you with your workflows today?</p>
 <div id="erp-ai-suggestions">
-
+<button type="button" class="erp-ai-suggestion" data-message="Show today's sales summary">Today's sales summary</button>
+<button type="button" class="erp-ai-suggestion" data-message="Top 10 customers this month">Top 10 customers</button>
+<button type="button" class="erp-ai-suggestion" data-message="Any pending purchase orders?">Pending purchase orders</button>
 </div>
 </div>
-<!-- منطقة الرسائل التفاعلية (فاضية وجاهزة لاستقبال الـ Append من السكريبت) -->
+<!-- منطقة الرسائل التفاعلية -->
 <div id="erp-ai-messages"></div>
 </div>
-<!-- الفوتر وصندوق الإدخال المحدث والمودرن -->
+
+<!-- الفوتر وصندوق الإدخال -->
 <div id="erp-ai-footer">
 <div class="erp-ai-input-wrapper">
-<!-- زرار الـ Attach (أيقونة SVG أنيقة ومفصولة) -->
 <label for="erp-ai-file-input" id="erp-ai-attach-btn" title="إرفاق ملف">
 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
 <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -57,11 +91,8 @@
 </svg>
 </label>
 <input type="file" id="erp-ai-file-input" style="display: none;" />
-<!-- معاينة الملف المرفق -->
 <div id="erp-ai-file-preview" style="display: none;"></div>
-<!-- خانة الكتابة -->
 <textarea id="erp-ai-input" rows="1" placeholder="Ask anything..."></textarea>
-<!-- زر الإرسال -->
 <button type="button" id="erp-ai-send" aria-label="Send message">
 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
 <line x1="22" y1="2" x2="11" y2="13"></line>
@@ -70,6 +101,9 @@
 </button>
 </div>
 </div>
+
+</div> <!-- /#erp-ai-chat-column -->
+</div> <!-- /#erp-ai-main-row -->
 </div>
 </body>
 </html>

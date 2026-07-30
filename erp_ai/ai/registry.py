@@ -69,13 +69,11 @@ def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
             except:
                 filters = {}
 
-        # فرض حد أقصى للـ limit لمنع استهلاك الذاكرة العشوائي
         limit = min(int(limit or 20), 100)
 
         if not fields or fields == ["name"]:
             fields = ["name", "customer", "grand_total", "posting_date"] if doctype == "Sales Invoice" else ["*"]
 
-        # حساب العدد الإجمالي الفعلي لتجنب الخلط بين الصفر والأخطاء
         total_count = frappe.db.count(doctype, filters=filters)
 
         data = frappe.get_list(
@@ -200,7 +198,105 @@ def manage_erp_document(doctype, docname, action, data=None):
         return {"status": "error", "message": str(e)}
 
 
-# تسجيل الأدوات مع التعليمات والوصف المحسّن للذكاء الاصطناعي
+def create_erp_report(report_title, report_type="Report Builder", ref_doctype=None, module="Accounts", query_text=None):
+    """
+    أداة مخصصة لإنشاء وحفظ التقارير في نظام ERPNext
+    """
+    try:
+        if not frappe.has_permission("Report", "create"):
+            return {"status": "error", "message": "ليس لديك صلاحية إنشاء تقارير في النظام."}
+
+        if frappe.db.exists("Report", {"report_name": report_title}):
+            return {"status": "error", "message": f"التقرير '{report_title}' موجود مسبقاً."}
+
+        report_doc = {
+            "doctype": "Report",
+            "report_name": report_title,
+            "report_type": report_type,
+            "is_standard": "No",
+            "module": module,
+        }
+
+        if report_type == "Report Builder":
+            if not ref_doctype:
+                return {"status": "error", "message": "يجب تحديد نوع المستند (DocType) الأساسي للتقرير."}
+            report_doc["ref_doctype"] = ref_doctype
+        elif report_type == "Query Report":
+            if not query_text:
+                return {"status": "error", "message": "يجب توفير استعلام SQL لإنشاء التقرير."}
+            report_doc["query"] = query_text
+        elif report_type == "Script Report":
+            if ref_doctype:
+                report_doc["dependencies"] = ref_doctype
+
+        doc = frappe.get_doc(report_doc)
+        doc.insert(ignore_permissions=True)
+        frappe.db.commit()
+
+        return {
+            "status": "success",
+            "message": f"تم إنشاء التقرير ({report_type}) تحت اسم '{report_title}' بنجاح تام.",
+            "report_name": doc.name
+        }
+    except Exception as e:
+        frappe.log_error(title="ERP AI Report Creation Error", message=str(e))
+        return {"status": "error", "message": str(e)}
+
+
+def create_erp_dashboard(dashboard_name, module="Accounts"):
+    """
+    أداة مخصصة لإنشاء وحفظ لوحات التحكم مع إنشاء Chart افتراضي لمنع خطأ الجدول الإجباري
+    """
+    try:
+        if not frappe.has_permission("Dashboard", "create"):
+            return {"status": "error", "message": "ليس لديك صلاحية إنشاء لوحات تحكم."}
+
+        if frappe.db.exists("Dashboard", dashboard_name):
+            return {"status": "error", "message": f"لوحة التحكم '{dashboard_name}' موجودة بالفعل."}
+
+        # إنشاء Dashboard Chart افتراضي لتجاوز خطأ إلزاميّة جدول الـ Charts
+        chart_name = f"{dashboard_name} Chart"
+        if not frappe.db.exists("Dashboard Chart", chart_name):
+            try:
+                chart_doc = frappe.get_doc({
+                    "doctype": "Dashboard Chart",
+                    "chart_name": chart_name,
+                    "chart_type": "Count",
+                    "document_type": "ToDo",
+                    "interval": "Monthly",
+                    "timeseries": 1,
+                    "module": module
+                })
+                chart_doc.insert(ignore_permissions=True)
+            except Exception:
+                pass
+
+        # تجهيز المستند مع ربط الـ Chart الإجباري
+        doc_data = {
+            "doctype": "Dashboard",
+            "dashboard_name": dashboard_name,
+            "module": module,
+            "is_default": 0
+        }
+        
+        if frappe.db.exists("Dashboard Chart", chart_name):
+            doc_data["charts"] = [{"chart": chart_name}]
+
+        doc = frappe.get_doc(doc_data)
+        doc.insert(ignore_permissions=True)
+        frappe.db.commit()
+
+        return {
+            "status": "success",
+            "message": f"تم إنشاء لوحة التحكم '{dashboard_name}' بنجاح في موديول {module}.",
+            "dashboard_name": doc.name
+        }
+    except Exception as e:
+        frappe.log_error(title="ERP AI Dashboard Creation Error", message=str(e))
+        return {"status": "error", "message": str(e)}
+
+
+# تسجيل الأدوات
 register_tool(
     name="run_erp_query",
     description=(
@@ -211,87 +307,58 @@ register_tool(
         "with appropriate fields (like item_code, qty, amount) so you can process and present the exact answer."
     ),
     parameters={
-        "doctype": {
-            "type": "string",
-            "description": "The exact Frappe DocType name (e.g., 'Sales Invoice Item' for products/items analysis, 'Sales Invoice' for invoices, 'Customer' for customers)",
-            "required": True
-        },
-        "fields": {
-            "type": "string",
-            "description": "A JSON array of fields or comma-separated strings to fetch",
-            "required": False
-        },
-        "filters": {
-            "type": "string",
-            "description": "A JSON string representing filters to apply",
-            "required": False
-        },
-        "order_by": {
-            "type": "string",
-            "description": "Field to sort by (e.g., 'creation desc')",
-            "required": False
-        },
-        "limit": {
-            "type": "integer",
-            "description": "Max number of records to fetch (default 20)",
-            "required": False
-        }
+        "doctype": {"type": "string", "description": "The exact Frappe DocType name", "required": True},
+        "fields": {"type": "string", "description": "A JSON array of fields or comma-separated strings to fetch", "required": False},
+        "filters": {"type": "string", "description": "A JSON string representing filters to apply", "required": False},
+        "order_by": {"type": "string", "description": "Field to sort by", "required": False},
+        "limit": {"type": "integer", "description": "Max number of records to fetch", "required": False}
     },
     func=run_erp_query
 )
 
 register_tool(
     name="universal_fallback_search",
-    description="Universal fallback tool to search and retrieve data or records from any DocType when specific queries fail or a broad search is needed.",
+    description="Universal fallback tool to search and retrieve data or records from any DocType when specific queries fail.",
     parameters={
-        "doctype": {
-            "type": "string",
-            "description": "The Frappe DocType to search within",
-            "required": False
-        },
-        "txt": {
-            "type": "string",
-            "description": "Search keyword",
-            "required": False
-        },
-        "filters": {
-            "type": "string",
-            "description": "JSON filters string",
-            "required": False
-        },
-        "limit": {
-            "type": "integer",
-            "description": "Limit records",
-            "required": False
-        }
+        "doctype": {"type": "string", "description": "DocType to search", "required": False},
+        "txt": {"type": "string", "description": "Search keyword", "required": False},
+        "filters": {"type": "string", "description": "JSON filters string", "required": False},
+        "limit": {"type": "integer", "description": "Limit records", "required": False}
     },
     func=universal_fallback_search
 )
 
 register_tool(
     name="manage_erp_document",
-    description="Use this tool to perform full actions on documents in ERPNext such as canceling, submitting, updating, or deleting documents based on user permissions.",
+    description="Use this tool to perform full actions on documents such as canceling, submitting, updating, or deleting.",
     parameters={
-        "doctype": {
-            "type": "string",
-            "description": "The exact Frappe DocType name",
-            "required": True
-        },
-        "docname": {
-            "type": "string",
-            "description": "The unique name or ID of the document",
-            "required": True
-        },
-        "action": {
-            "type": "string",
-            "description": "The action to perform: 'cancel', 'submit', 'update', or 'delete'",
-            "required": True
-        },
-        "data": {
-            "type": "string",
-            "description": "JSON string of fields and values to update if action is 'update'",
-            "required": False
-        }
+        "doctype": {"type": "string", "description": "Exact Frappe DocType name", "required": True},
+        "docname": {"type": "string", "description": "Unique name or ID of the document", "required": True},
+        "action": {"type": "string", "description": "Action: 'cancel', 'submit', 'update', or 'delete'", "required": True},
+        "data": {"type": "string", "description": "JSON string of fields to update", "required": False}
     },
     func=manage_erp_document
+)
+
+register_tool(
+    name="create_erp_report",
+    description="Use this tool to permanently create and save a new Report (Report Builder, Query Report, or Script Report) in ERPNext.",
+    parameters={
+        "report_title": {"type": "string", "description": "The title/name of the report", "required": True},
+        "report_type": {"type": "string", "description": "Type of report: 'Report Builder', 'Query Report', or 'Script Report'", "required": False},
+        "ref_doctype": {"type": "string", "description": "Base DocType (for Report Builder)", "required": False},
+        "module": {"type": "string", "description": "ERPNext module name (e.g. Accounts, Stock, Selling)", "required": False},
+        "query_text": {"type": "string", "description": "SQL query text if type is Query Report", "required": False}
+    },
+    func=create_erp_report
+)
+
+register_tool(
+    name="create_erp_dashboard",
+    description="Use this tool to permanently create and save a new Dashboard record in ERPNext.",
+    parameters={
+        "dashboard_name": {"type": "string", "description": "The name of the dashboard", "required": True},
+        "module": {"type": "string", "description": "ERPNext module name (e.g. Accounts, Stock, Selling)", "required": False}
+    },
+    func=create_erp_dashboard
 )
