@@ -11,7 +11,8 @@ class ERPAI {
         }
         window.__erpAiInstance = this;
 
-        document.querySelectorAll("#erp-ai-window, #erp-ai-button").forEach(el => el.remove());
+        // تنظيف مسبق لأي بقايا مكررة
+        this.cleanupDuplicates();
 
         this.messages = [];
         this.conversation = null;
@@ -30,9 +31,15 @@ class ERPAI {
         this.minWidth = 320;
         this.minHeight = 420;
 
+        this.isCreatingWindow = false;
+
         this.injectStyles();
         this.createButton();
         this.createWindow();
+    }
+
+    cleanupDuplicates() {
+        document.querySelectorAll("#erp-ai-window, #erp-ai-button").forEach(el => el.remove());
     }
 
     injectStyles() {
@@ -57,6 +64,15 @@ class ERPAI {
             }
 
             #erp-ai-button {
+                position: fixed;
+                right: 24px;
+                bottom: 24px;
+                width: 56px;
+                height: 56px;
+                border-radius: 50%;
+                background: var(--erp-surface);
+                cursor: pointer;
+                z-index: 9998;
                 box-shadow: 0 8px 24px rgba(37, 99, 235, 0.28), 0 2px 6px rgba(15, 23, 42, 0.12);
                 transition: transform 220ms var(--erp-ease), box-shadow 220ms var(--erp-ease);
             }
@@ -67,10 +83,20 @@ class ERPAI {
             #erp-ai-button:active { transform: translateY(0) scale(0.98); }
 
             #erp-ai-window {
+                position: fixed;
+                right: 24px;
+                bottom: 90px;
+                width: 380px;
+                height: 600px;
                 border-radius: 18px;
+                background: var(--erp-surface);
                 box-shadow: 0 20px 48px rgba(15, 23, 42, 0.18), 0 4px 16px rgba(15, 23, 42, 0.08);
                 border: 1px solid var(--erp-border);
                 animation: erp-ai-window-in 260ms var(--erp-ease);
+                z-index: 9999;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
             }
             @keyframes erp-ai-window-in {
                 from { opacity: 0; transform: translateY(10px) scale(0.98); }
@@ -213,24 +239,31 @@ class ERPAI {
     }
 
     async createWindow() {
-        if (document.getElementById("erp-ai-window")) return;
-        const windowElement = document.createElement("div");
-        windowElement.id = "erp-ai-window";
-        windowElement.style.display = "none";
-        document.body.appendChild(windowElement);
+        if (document.getElementById("erp-ai-window") || this.isCreatingWindow) return;
+        this.isCreatingWindow = true;
 
         try {
             const html = await this.loadTemplate();
-            if (document.querySelectorAll("#erp-ai-window").length > 1) {
-                windowElement.remove();
+
+            // فحص ثانٍ في حال تم إنشاء العنصر أثناء عملية الجلب الـ async
+            if (document.getElementById("erp-ai-window")) {
+                this.isCreatingWindow = false;
                 return;
             }
+
+            const windowElement = document.createElement("div");
+            windowElement.id = "erp-ai-window";
+            windowElement.style.display = "none";
             windowElement.innerHTML = html;
+
+            document.body.appendChild(windowElement);
+
             this.setupResizableWindow();
             this.bindEvents();
         } catch (e) {
-            console.error(e);
-            windowElement.innerHTML = `<div style="padding:20px; color:red; font-weight:bold;">Failed to load ERP AI UI.</div>`;
+            console.error("ERP AI: UI initialization error:", e);
+        } finally {
+            this.isCreatingWindow = false;
         }
     }
 
@@ -238,27 +271,10 @@ class ERPAI {
         const windowEl = document.getElementById("erp-ai-window");
         if (!windowEl) return;
 
-        const computedStyle = window.getComputedStyle(windowEl);
-        const computedPosition = computedStyle.position;
-        if (computedPosition !== "fixed" && computedPosition !== "absolute") {
-            windowEl.style.position = "fixed";
-        }
-        if (!windowEl.style.zIndex) {
-            windowEl.style.zIndex = "9999";
-        }
-
-        const hasExplicitOffset = [computedStyle.top, computedStyle.left, computedStyle.right, computedStyle.bottom]
-            .some(v => v && v !== "auto");
-        if (!hasExplicitOffset) {
-            windowEl.style.right = "24px";
-            windowEl.style.bottom = "90px";
-        }
-
         windowEl.style.minWidth = this.minWidth + "px";
         windowEl.style.minHeight = this.minHeight + "px";
         windowEl.style.maxWidth = "95vw";
         windowEl.style.maxHeight = "90vh";
-        windowEl.style.boxSizing = "border-box";
 
         if (!document.getElementById("erp-ai-resize-handle")) {
             const handle = document.createElement("div");
@@ -327,39 +343,38 @@ class ERPAI {
 
             if (r.width > maxWidth) windowEl.style.width = maxWidth + "px";
             if (r.height > maxHeight) windowEl.style.height = maxHeight + "px";
-
-            const newRect = windowEl.getBoundingClientRect();
-            if (newRect.right > window.innerWidth) {
-                windowEl.style.left = Math.max(0, window.innerWidth - newRect.width) + "px";
-            }
-            if (newRect.bottom > window.innerHeight) {
-                windowEl.style.top = Math.max(0, window.innerHeight - newRect.height) + "px";
-            }
         });
     }
 
     bindEvents() {
         const input = document.getElementById("erp-ai-input");
-        document.getElementById("erp-ai-close").addEventListener("click", () => this.hideWindow());
-        document.getElementById("erp-ai-minimize").addEventListener("click", () => this.hideWindow());
-        document.getElementById("erp-ai-send").addEventListener("click", () => this.sendMessage());
+        const closeBtn = document.getElementById("erp-ai-close");
+        const minimizeBtn = document.getElementById("erp-ai-minimize");
+        const sendBtn = document.getElementById("erp-ai-send");
 
-        input.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                this.sendMessage();
-            }
-        });
+        if (closeBtn) closeBtn.addEventListener("click", () => this.hideWindow());
+        if (minimizeBtn) minimizeBtn.addEventListener("click", () => this.hideWindow());
+        if (sendBtn) sendBtn.addEventListener("click", () => this.sendMessage());
 
-        input.addEventListener("input", function () {
-            this.style.height = "auto";
-            this.style.height = this.scrollHeight + "px";
-        });
+        if (input) {
+            input.addEventListener("keydown", (e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    this.sendMessage();
+                }
+            });
+
+            input.addEventListener("input", function () {
+                this.style.height = "auto";
+                this.style.height = Math.min(this.scrollHeight, 120) + "px";
+            });
+        }
 
         const fileInput = document.getElementById("erp-ai-file-input");
         const attachBtn = document.getElementById("erp-ai-attach-btn");
 
         if (attachBtn && fileInput) {
+            attachBtn.addEventListener("click", () => fileInput.click());
             fileInput.addEventListener("change", (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
@@ -382,9 +397,11 @@ class ERPAI {
 
         document.querySelectorAll(".erp-ai-suggestion").forEach(button => {
             button.addEventListener("click", () => {
-                input.value = button.dataset.message;
-                input.dispatchEvent(new Event("input"));
-                input.focus();
+                if (input) {
+                    input.value = button.dataset.message || button.textContent.trim();
+                    input.dispatchEvent(new Event("input"));
+                    input.focus();
+                }
             });
         });
 
@@ -429,7 +446,7 @@ class ERPAI {
 
     loadConversationsList() {
         const listEl = document.getElementById("erp-ai-conversations-list");
-        if (!listEl) return;
+        if (!listEl || typeof frappe === "undefined") return;
 
         frappe.call({
             method: "erp_ai.api.get_user_conversations",
@@ -458,6 +475,8 @@ class ERPAI {
     }
 
     loadConversationHistory(conversationName) {
+        if (typeof frappe === "undefined") return;
+
         frappe.call({
             method: "erp_ai.api.load_conversation",
             args: { conversation_name: conversationName },
@@ -492,14 +511,7 @@ class ERPAI {
         const windowEl = document.getElementById("erp-ai-window");
         const header = document.getElementById("erp-ai-header");
 
-        if (!windowEl || !header) {
-            console.warn(
-                "ERP AI: dragging not enabled — could not find #erp-ai-window and/or " +
-                "#erp-ai-header in the DOM. Make sure the header bar element in " +
-                "chat.html has id=\"erp-ai-header\"."
-            );
-            return;
-        }
+        if (!windowEl || !header) return;
 
         header.addEventListener("dragstart", (e) => e.preventDefault());
 
@@ -534,17 +546,23 @@ class ERPAI {
     }
 
     showWindow() {
-        document.getElementById("erp-ai-window").style.display = "flex";
+        const win = document.getElementById("erp-ai-window");
+        if (win) win.style.display = "flex";
         this.focusInput();
     }
 
     hideWindow() {
-        document.getElementById("erp-ai-window").style.display = "none";
+        const win = document.getElementById("erp-ai-window");
+        if (win) win.style.display = "none";
     }
 
     toggleWindow() {
         const win = document.getElementById("erp-ai-window");
-        win.style.display === "flex" ? this.hideWindow() : this.showWindow();
+        if (win) {
+            win.style.display === "flex" ? this.hideWindow() : this.showWindow();
+        } else {
+            this.createWindow().then(() => this.showWindow());
+        }
     }
 
     focusInput() {
@@ -552,14 +570,23 @@ class ERPAI {
         if (input) input.focus();
     }
 
+    scrollToBottom() {
+        const body = document.getElementById("erp-ai-body");
+        if (body) {
+            body.scrollTop = body.scrollHeight;
+        }
+    }
+
     async sendMessage() {
         const input = document.getElementById("erp-ai-input");
-        const message = input.value.trim();
+        const message = input ? input.value.trim() : "";
 
         if (!message && !this.attachedFileContent) return;
 
-        input.value = "";
-        input.style.height = "auto";
+        if (input) {
+            input.value = "";
+            input.style.height = "auto";
+        }
 
         const welcome = document.getElementById("erp-ai-welcome");
         if (welcome) welcome.style.display = "none";
@@ -593,6 +620,8 @@ class ERPAI {
         this.showTyping();
 
         try {
+            if (typeof frappe === "undefined") throw new Error("Frappe framework not detected.");
+
             const response = await frappe.call({
                 method: "erp_ai.api.ask",
                 args: argsPayload
@@ -611,7 +640,6 @@ class ERPAI {
                 }
 
                 let fullReply = response.message.reply;
-
                 if (Array.isArray(fullReply)) {
                     fullReply = fullReply.join("");
                 }
@@ -670,6 +698,8 @@ class ERPAI {
 
     addMessage(text, sender) {
         const container = document.getElementById("erp-ai-messages");
+        if (!container) return;
+
         const row = document.createElement("div");
         row.className = "erp-ai-row " + sender;
 
@@ -734,7 +764,11 @@ class ERPAI {
                     exportBtn.addEventListener("click", () => {
                         try {
                             const payload = JSON.parse(decodeURIComponent(exportBtn.dataset.csvPayload));
-                            window.downloadReportCSV(payload);
+                            if (typeof window.downloadReportCSV === "function") {
+                                window.downloadReportCSV(payload);
+                            } else {
+                                this.downloadFallbackCSV(payload);
+                            }
                         } catch (err) {
                             console.error("Failed to parse CSV payload:", err);
                         }
@@ -755,11 +789,27 @@ class ERPAI {
         this.scrollToBottom();
     }
 
+    downloadFallbackCSV(data) {
+        if (!data || !data.length) return;
+        const headers = Object.keys(data[0]);
+        let csv = headers.join(",") + "\n";
+        data.forEach(row => {
+            csv += headers.map(h => `"${(row[h] || "").toString().replace(/"/g, '""')}"`).join(",") + "\n";
+        });
+        const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `report_${Date.now()}.csv`;
+        link.click();
+    }
+
     showTyping() {
         if (this.typing) return;
         this.typing = true;
 
         const container = document.getElementById("erp-ai-messages");
+        if (!container) return;
+
         const row = document.createElement("div");
         row.className = "erp-ai-row assistant erp-ai-typing-row";
 
@@ -788,19 +838,11 @@ class ERPAI {
         const typingRow = document.querySelector(".erp-ai-typing-row");
         if (typingRow) typingRow.remove();
     }
-
-    scrollToBottom() {
-        const body = document.getElementById("erp-ai-body");
-        if (body) {
-            body.scrollTop = body.scrollHeight;
-        }
-    }
 }
 
+// Auto-initialize when script loads
 if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => {
-        new ERPAI();
-    });
+    document.addEventListener("DOMContentLoaded", () => new ERPAI());
 } else {
     new ERPAI();
 }

@@ -103,12 +103,20 @@
     flex-direction: column;
     z-index: 9999;
     animation: erp-ai-window-in 260ms var(--erp-ease);
-    /* Intentionally NOT overflow:hidden — clips the resize handle sitting
-       in the corner. Inner sections handle their own corner rounding. */
+    overflow: hidden; /* يمنع خروج الشاشة البيضاء تماماً من الإطار */
+    transition: border-radius 180ms var(--erp-ease);
 }
 @keyframes erp-ai-window-in {
     from { opacity: 0; transform: translateY(10px) scale(0.98); }
     to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* حالة التكبير الكامل (Maximize) اللي بيتحكم فيها erp_ai.js */
+#erp-ai-window.erp-ai-maximized {
+    border-radius: 14px;
+    transition: width 180ms var(--erp-ease), height 180ms var(--erp-ease),
+                left 180ms var(--erp-ease), top 180ms var(--erp-ease),
+                border-radius 180ms var(--erp-ease);
 }
 
 @media (max-width: 480px) {
@@ -117,25 +125,28 @@
         left: 16px;
         bottom: 88px;
         width: auto;
+        min-width: 0;
         height: 70vh;
     }
 }
 
-.erp-ai-resize-handle {
+/* مقبض تغيير الحجم — لازم يتطابق مع الـ id اللي بينشئه erp_ai.js */
+#erp-ai-resize-handle {
     position: absolute;
-    right: 6px;
-    bottom: 6px;
-    width: 14px;
-    height: 14px;
+    right: 4px;
+    bottom: 4px;
+    width: 18px;
+    height: 18px;
     cursor: nwse-resize;
     z-index: 10;
-    opacity: 0.55;
+    opacity: 0.6;
     background:
         linear-gradient(135deg, transparent 0 45%, var(--erp-slate-soft) 45% 55%, transparent 55% 100%),
         linear-gradient(135deg, transparent 0 65%, var(--erp-slate-soft) 65% 75%, transparent 75% 100%);
+    border-bottom-right-radius: 18px;
     transition: opacity 140ms var(--erp-ease);
 }
-.erp-ai-resize-handle:hover { opacity: 1; }
+#erp-ai-resize-handle:hover { opacity: 1; }
 
 /* ------------------------------------------------------------------------
    Header
@@ -150,8 +161,18 @@
     background: var(--erp-surface);
     cursor: grab;
     flex-shrink: 0;
+    user-select: none;
+    -webkit-user-select: none;
 }
 #erp-ai-header:active { cursor: grabbing; }
+
+/* منع صورة السحب الشبحية (ghost) اللي بيعرضها المتصفح افتراضيًا
+   لما تسحب أي عنصر HTML عادي بدل ما تعتمد على منطق JS للسحب */
+#erp-ai-header,
+#erp-ai-header * {
+    -webkit-user-drag: none;
+    -moz-user-drag: none;
+}
 
 #erp-ai-title {
     display: flex;
@@ -256,30 +277,51 @@
     background: #FEE2E2;
     color: #DC2626;
 }
+/* زر التكبير/التصغير اللي بيضيفه erp_ai.js ديناميكيًا داخل #erp-ai-actions */
+#erp-ai-maximize.active {
+    color: var(--erp-accent);
+}
 
 /* ------------------------------------------------------------------------
-   Main row: sidebar + chat column, side by side from the start
-   (no runtime DOM manipulation — the sidebar is just collapsed via CSS)
+   Main row & Sidebar (Fixed Layout Bug)
    ------------------------------------------------------------------------ */
 #erp-ai-main-row {
     flex: 1;
     min-height: 0;
     display: flex;
+    flex-direction: row;
     overflow: hidden;
+    position: relative;
+    width: 100%;
 }
 
 #erp-ai-sidebar {
+    position: relative !important;
+    left: auto !important;
+    right: auto !important;
+    top: auto !important;
+    bottom: auto !important;
+    
     width: 0;
+    min-width: 0;
     flex-shrink: 0;
     overflow: hidden;
     background: var(--erp-surface-soft);
-    border-right: 1px solid var(--erp-border);
+    border-right: 0 solid var(--erp-border);
     display: flex;
     flex-direction: column;
-    transition: width 220ms var(--erp-ease);
+    transition: width 240ms var(--erp-ease), border-width 240ms var(--erp-ease);
 }
+
 #erp-ai-sidebar.open {
-    width: 160px;
+    width: 150px;
+    border-right-width: 1px;
+}
+
+/* تقييد العروض الداخلية لمنع التمدد الخارجي */
+#erp-ai-sidebar > * {
+    width: 150px;
+    box-sizing: border-box;
 }
 
 #erp-ai-sidebar-header {
@@ -317,6 +359,7 @@
 #erp-ai-conversations-list {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 0 4px 8px;
 }
 
@@ -354,6 +397,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
 }
 
 /* ------------------------------------------------------------------------
@@ -636,14 +680,4 @@
         animation: none !important;
         transition: none !important;
     }
-}
-#erp-ai-sidebar {
-    width: 0;
-    overflow: hidden;
-    transition: width 0.3s ease;
-    /* باقي التنسيقات الخاصة بالقائمة */
-}
-
-#erp-ai-sidebar.open {
-    width: 220px; /* أو العرض المناسب لك */
 }
