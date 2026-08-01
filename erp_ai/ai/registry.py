@@ -1,606 +1,364 @@
 import json
 import frappe
-from frappe import _
 
-# ---------------------------------------------------------
-# Tool Registry & Metadata System
-# ---------------------------------------------------------
+TOOLS = {}
 
-_REGISTRY = {}
-
-
-def register_tool(name, description, parameters):
-    """
-    Decorator to register a function and define its JSON schema to pass to the LLM.
-    """
-    def decorator(func):
-        _REGISTRY[name] = {
-            "name": name,
-            "description": description,
-            "parameters": parameters,
-            "function": func
-        }
-        return func
-    return decorator
-
+def register_tool(name, description, parameters, func):
+    TOOLS[name] = {
+        "name": name,
+        "description": description,
+        "parameters": parameters or {},
+        "function": func,
+    }
 
 def get_tools():
-    """Return the full dictionary of registered tools."""
-    return _REGISTRY
+    return TOOLS
 
+def list_tools():
+    return list(TOOLS.values())
 
 def get_functions():
-    """Return a list of tool definitions ready to pass to the AI Model."""
-    return [
-        {
-            "name": data["name"],
-            "description": data["description"],
-            "parameters": data["parameters"]
-        }
-        for data in _REGISTRY.values()
-    ]
+    functions_list = []
+    for tool in TOOLS.values():
+        param_properties = {}
+        required_fields = []
+        
+        if tool.get("parameters"):
+            for param_name, param_meta in tool["parameters"].items():
+                param_properties[param_name] = {
+                    "type": param_meta.get("type", "string").upper(),
+                    "description": param_meta.get("description", "")
+                }
+                if param_meta.get("type") == "array":
+                    param_properties[param_name]["items"] = {"type": "STRING"}
+                
+                if param_meta.get("required"):
+                    required_fields.append(param_name)
+
+        functions_list.append({
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": {
+                "type": "OBJECT",
+                "properties": param_properties,
+                "required": required_fields if required_fields else None
+            }
+        })
+    return functions_list
+
+def get_tool(name):
+    return TOOLS.get(name)
 
 
-# ---------------------------------------------------------
-# 1. Schema & Field Discovery
-# ---------------------------------------------------------
-@register_tool(
-    name="get_doctype_schema",
-    description="Inspect ERPNext DocType metadata to discover available fields and mandatory attributes.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "doctype": {"type": "string", "description": "Target ERPNext DocType (e.g., Sales Order, Customer)"}
-        },
-        "required": ["doctype"]
-    }
-)
-def get_doctype_schema(doctype):
+def run_erp_query(doctype, fields=None, filters=None, limit=20, **kwargs):
+    """
+    دالة ذكية وآمنة لجلب البيانات والعدد الإجمالي من أي DocType مع تحسينات الأداء
+    """
     try:
-        if not frappe.db.exists("DocType", doctype):
-            return {"status": "error", "message": f"DocType '{doctype}' does not exist."}
+        order_by = kwargs.get("order_by") or kwargs.get("orderby") or "creation desc"
 
-        meta = frappe.get_meta(doctype)
-        fields = []
-        for f in meta.fields:
-            if not f.is_virtual and f.fieldtype not in ["Section Break", "Column Break", "Tab Break"]:
-                fields.append({
-                    "fieldname": f.fieldname,
-                    "label": f.label,
-                    "fieldtype": f.fieldtype,
-                    "reqd": f.reqd,
-                    "options": f.options
-                })
+        if isinstance(fields, str):
+            try:
+                fields = json.loads(fields)
+            except:
+                fields = [f.strip() for f in fields.split(",")]
+            
+        if isinstance(filters, str):
+            try:
+                filters = json.loads(filters)
+            except:
+                filters = {}
+
+        limit = min(int(limit or 20), 100)
+
+        if not fields or fields == ["name"]:
+            fields = ["name", "customer", "grand_total", "posting_date"] if doctype == "Sales Invoice" else ["*"]
+
+        total_count = frappe.db.count(doctype, filters=filters)
+
+        data = frappe.get_list(
+            doctype,
+            fields=fields,
+            filters=filters,
+            order_by=order_by,
+            limit_page_length=limit
+        )
+
+        return {
+            "total_count": total_count,
+            "data": data
+        }
+    except Exception as e:
+        frappe.log_error(title="ERP AI Query Error", message=str(e))
+        return {"error": str(e)}
+
+
+def universal_fallback_search(doctype=None, txt=None, filters=None, limit=10):
+    """
+    Universal Fallback Tool: أداة احتياطية شاملة لجلب أي بيانات من أي Doctype عند الحاجة.
+    """
+    try:
+        if not doctype:
+            doctype = "ToDo"
+            
+        if isinstance(filters, str):
+            filters = frappe.parse_json(filters)
+        
+        if not filters:
+            filters = {}
+
+        limit = min(int(limit or 10), 50)
+
+        if txt and not filters:
+            meta = frappe.get_meta(doctype)
+            search_field = meta.get_search_fields()[0] if meta.get_search_fields() else "name"
+            filters[search_field] = ["like", f"%{txt}%"]
+
+        data = frappe.get_all(
+            doctype,
+            filters=filters,
+            fields=["*"],
+            limit_page_length=limit,
+            order_by="modified desc"
+        )
 
         return {
             "status": "success",
             "doctype": doctype,
-            "title_field": meta.title_field or "name",
-            "search_fields": meta.search_fields,
-            "fields": fields
+            "total_count": len(data),
+            "data": data
         }
+
     except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-# ---------------------------------------------------------
-# 2. Universal Data Fetching & Querying
-# ---------------------------------------------------------
-@register_tool(
-    name="run_erp_query",
-    description="Query ERPNext records with flexible filters, field selection, ordering, and optional child table inclusion.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "doctype": {"type": "string", "description": "Target DocType"},
-            "filters": {"type": "object", "description": "Dict or JSON object of filter conditions"},
-            "fields": {"type": "array", "items": {"type": "string"}, "description": "List of field names to select"},
-            "order_by": {"type": "string", "description": "Sorting string (e.g., 'creation desc')"},
-            "limit": {"type": "integer", "description": "Number of records to return (default 20)"},
-            "include_child_table": {"type": "string", "description": "Optional child table fieldname to populate"}
-        },
-        "required": ["doctype"]
-    }
-)
-def run_erp_query(doctype, filters=None, fields=None, order_by=None, limit=20, include_child_table=None):
-    try:
-        if isinstance(filters, str):
-            try: filters = json.loads(filters)
-            except Exception: filters = {}
-
-        if isinstance(fields, str):
-            try: fields = json.loads(fields)
-            except Exception: fields = None
-
-        if not fields:
-            fields = ["*"]
-
-        records = frappe.get_list(
-            doctype,
-            filters=filters or {},
-            fields=fields,
-            order_by=order_by or "modified desc",
-            limit_page_length=limit or 20
-        )
-
-        if include_child_table and records:
-            for doc in records:
-                if "name" in doc:
-                    child_records = frappe.get_all(
-                        include_child_table,
-                        filters={"parent": doc["name"]},
-                        fields=["*"]
-                    )
-                    doc[include_child_table] = child_records
-
+        frappe.log_error(message=str(e), title="Universal Fallback Tool Error")
         return {
-            "status": "success",
-            "count": len(records),
-            "data": records
+            "status": "error",
+            "message": str(e),
+            "data": []
         }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
 
 
-# ---------------------------------------------------------
-# 3. Universal Fallback Search
-# ---------------------------------------------------------
-@register_tool(
-    name="universal_fallback_search",
-    description="Fuzzy search across standard title/name fields when specific filters fail.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "doctype": {"type": "string"},
-            "query": {"type": "string"},
-            "limit": {"type": "integer"}
-        },
-        "required": ["doctype", "query"]
-    }
-)
-def universal_fallback_search(doctype, query, limit=10):
+def manage_erp_document(doctype, docname, action, data=None):
     try:
-        meta = frappe.get_meta(doctype)
-        search_fields = [meta.title_field] if meta.title_field else []
-        if "name" not in search_fields:
-            search_fields.append("name")
-
-        or_filters = [[doctype, f_name, "like", f"%{query}%"] for f_name in search_fields if f_name]
-
-        results = frappe.get_all(
-            doctype,
-            or_filters=or_filters,
-            fields=["*"],
-            limit_page_length=limit or 10
-        )
-        return {"status": "success", "count": len(results), "data": results}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-# ---------------------------------------------------------
-# 4. Create ERP Documents
-# ---------------------------------------------------------
-@register_tool(
-    name="create_erp_document",
-    description="Create a new ERPNext document.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "doctype": {"type": "string"},
-            "doc_data": {"type": "object", "description": "Key-value dictionary of document values"}
-        },
-        "required": ["doctype", "doc_data"]
-    }
-)
-def create_erp_document(doctype, doc_data):
-    try:
-        if isinstance(doc_data, str):
-            doc_data = json.loads(doc_data)
-
-        doc = frappe.new_doc(doctype)
-        doc.update(doc_data)
-        doc.insert(ignore_permissions=False)
-        frappe.db.commit()
-
-        return {
-            "status": "success",
-            "message": f"Document '{doc.name}' created successfully.",
-            "name": doc.name,
-            "doc": doc.as_dict()
+        action = action.lower().strip()
+        perm_type_map = {
+            "cancel": "cancel",
+            "submit": "submit",
+            "update": "write",
+            "delete": "delete"
         }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-# ---------------------------------------------------------
-# 5. Manage ERP Documents (Submit, Cancel, Update, Delete)
-# ---------------------------------------------------------
-@register_tool(
-    name="manage_erp_document",
-    description="Perform document lifecycle actions: 'submit', 'cancel', 'update', or 'delete'.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "doctype": {"type": "string"},
-            "name": {"type": "string"},
-            "action": {"type": "string", "enum": ["submit", "cancel", "update", "delete"]},
-            "update_data": {"type": "object", "description": "Data dict if action is 'update'"}
-        },
-        "required": ["doctype", "name", "action"]
-    }
-)
-def manage_erp_document(doctype, name, action, update_data=None):
-    try:
-        if not frappe.db.exists(doctype, name):
-            return {"status": "error", "message": f"{doctype} '{name}' not found."}
-
-        doc = frappe.get_doc(doctype, name)
-
-        if action == "submit":
-            doc.submit()
-            msg = f"Document '{name}' submitted successfully."
-        elif action == "cancel":
-            doc.cancel()
-            msg = f"Document '{name}' cancelled successfully."
-        elif action == "delete":
-            frappe.delete_doc(doctype, name)
-            msg = f"Document '{name}' deleted successfully."
+        required_perm = perm_type_map.get(action, "write")
+        
+        if not frappe.has_permission(doctype, required_perm, docname):
+            return {"status": "error", "message": f"عذراً، لا تملك صلاحية ({action}) على هذا المستند ({docname})."}
+        
+        doc = frappe.get_doc(doctype, docname)
+        
+        if action == "cancel":
+            if doc.docstatus == 1:
+                doc.cancel()
+                return {"status": "success", "message": f"تم إلغاء المستند ({docname}) بنجاح تام."}
+            return {"status": "error", "message": f"المستند ({docname}) ليس في حالة معتمدة لكي يتم إلغاؤه."}
+            
+        elif action == "submit":
+            if doc.docstatus == 0:
+                doc.submit()
+                return {"status": "success", "message": f"تم اعتماد المستند ({docname}) بنجاح تام."}
+            return {"status": "error", "message": f"المستند ({docname}) معتمد مسبقاً أو ملغي."}
+            
         elif action == "update":
-            if isinstance(update_data, str):
-                update_data = json.loads(update_data)
-            if update_data:
-                doc.update(update_data)
+            if doc.docstatus != 0:
+                return {"status": "error", "message": f"لا يمكن تعديل مستند معتمد أو ملغي ({docname}) إلا بعد إلغائه أولاً."}
+            
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except:
+                    pass
+            
+            if isinstance(data, dict):
+                doc.update(data)
                 doc.save()
-                msg = f"Document '{name}' updated successfully."
+                return {"status": "success", "message": f"تم تحديث المستند ({docname}) بنجاح."}
             else:
-                return {"status": "error", "message": "No update_data provided."}
+                return {"status": "error", "message": "البيانات المراد تحديثها غير صالحة."}
+                
+        elif action == "delete":
+            if doc.docstatus == 0:
+                frapp_doc = frappe.get_doc(doctype, docname)
+                frapp_doc.delete()
+                return {"status": "success", "message": f"تم حذف المستند ({docname}) بنجاح."}
+            return {"status": "error", "message": "لا يمكن حذف مستند معتمد أو ملغي، يجب إلغاؤه أولاً."}
+            
         else:
-            return {"status": "error", "message": f"Unknown action '{action}'."}
-
-        frappe.db.commit()
-        return {"status": "success", "message": msg, "doc": doc.as_dict() if action != "delete" else None}
+            return {"status": "error", "message": f"الإجراء غير معروف: {action}"}
+            
     except Exception as e:
+        frappe.log_error(title=f"ERP AI Document Action Error [{action}]", message=frappe.get_traceback())
         return {"status": "error", "message": str(e)}
 
 
-# ---------------------------------------------------------
-# 6. Execute Doc Method
-# ---------------------------------------------------------
-@register_tool(
-    name="execute_doc_method",
-    description="Invoke specific Python methods attached to a document instance.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "doctype": {"type": "string"},
-            "name": {"type": "string"},
-            "method": {"type": "string"},
-            "args": {"type": "object"}
-        },
-        "required": ["doctype", "name", "method"]
-    }
-)
-def execute_doc_method(doctype, name, method, args=None):
+def create_erp_report(report_title, report_type="Report Builder", ref_doctype=None, module="Accounts", query_text=None):
+    """
+    أداة مخصصة لإنشاء وحفظ التقارير في نظام ERPNext
+    """
     try:
-        doc = frappe.get_doc(doctype, name)
-        if not hasattr(doc, method):
-            return {"status": "error", "message": f"Method '{method}' does not exist on {doctype}."}
+        if not frappe.has_permission("Report", "create"):
+            return {"status": "error", "message": "ليس لديك صلاحية إنشاء تقارير في النظام."}
 
-        if isinstance(args, str):
-            args = json.loads(args)
+        if frappe.db.exists("Report", {"report_name": report_title}):
+            return {"status": "error", "message": f"التقرير '{report_title}' موجود مسبقاً."}
 
-        method_fn = getattr(doc, method)
-        result = method_fn(**(args or {}))
-        frappe.db.commit()
+        report_doc = {
+            "doctype": "Report",
+            "report_name": report_title,
+            "report_type": report_type,
+            "is_standard": "No",
+            "module": module,
+        }
 
-        return {"status": "success", "result": result}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        if report_type == "Report Builder":
+            if not ref_doctype:
+                return {"status": "error", "message": "يجب تحديد نوع المستند (DocType) الأساسي للتقرير."}
+            report_doc["ref_doctype"] = ref_doctype
+        elif report_type == "Query Report":
+            if not query_text:
+                return {"status": "error", "message": "يجب توفير استعلام SQL لإنشاء التقرير."}
+            report_doc["query"] = query_text
+        elif report_type == "Script Report":
+            if ref_doctype:
+                report_doc["dependencies"] = ref_doctype
 
-
-# ---------------------------------------------------------
-# 7. System Analytics & Aggregations
-# ---------------------------------------------------------
-@register_tool(
-    name="get_system_analytics",
-    description="Perform high-level SQL aggregations (COUNT, SUM, AVG) directly.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "doctype": {"type": "string"},
-            "function": {"type": "string", "enum": ["COUNT", "SUM", "AVG", "MIN", "MAX"]},
-            "field": {"type": "string"},
-            "group_by": {"type": "string"},
-            "filters": {"type": "object"}
-        },
-        "required": ["doctype", "function"]
-    }
-)
-def get_system_analytics(doctype, function, field="name", group_by=None, filters=None):
-    try:
-        if isinstance(filters, str):
-            try: filters = json.loads(filters)
-            except Exception: filters = {}
-
-        field_to_aggregate = field if field else "name"
-        expr = f"{function}({field_to_aggregate})"
-
-        fields = [f"{expr} as value"]
-        if group_by:
-            fields.append(group_by)
-
-        data = frappe.get_all(
-            doctype,
-            filters=filters or {},
-            fields=fields,
-            group_by=group_by,
-            order_by="value desc"
-        )
-        return {"status": "success", "data": data}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-# ---------------------------------------------------------
-# 8. Create Custom Reports
-# ---------------------------------------------------------
-@register_tool(
-    name="create_erp_report",
-    description="Create saved Builder or Query Reports in ERPNext.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "report_name": {"type": "string"},
-            "ref_doctype": {"type": "string"},
-            "report_type": {"type": "string", "enum": ["Report Builder", "Query Report"]},
-            "query": {"type": "string", "description": "Required if report_type is Query Report"}
-        },
-        "required": ["report_name", "ref_doctype", "report_type"]
-    }
-)
-def create_erp_report(report_name, ref_doctype, report_type="Report Builder", query=None):
-    try:
-        if frappe.db.exists("Report", report_name):
-            return {"status": "error", "message": f"Report '{report_name}' already exists."}
-
-        rep = frappe.new_doc("Report")
-        rep.report_name = report_name
-        rep.ref_doctype = ref_doctype
-        rep.report_type = report_type
-        rep.is_standard = "No"
-
-        if report_type == "Query Report":
-            if not query:
-                return {"status": "error", "message": "SQL Query is required for Query Report."}
-            rep.query = query
-
-        rep.insert(ignore_permissions=True)
+        doc = frappe.get_doc(report_doc)
+        doc.insert(ignore_permissions=True)
         frappe.db.commit()
 
-        return {"status": "success", "message": f"Report '{report_name}' created successfully."}
+        return {
+            "status": "success",
+            "message": f"تم إنشاء التقرير ({report_type}) تحت اسم '{report_title}' بنجاح تام.",
+            "report_name": doc.name
+        }
     except Exception as e:
+        frappe.log_error(title="ERP AI Report Creation Error", message=str(e))
         return {"status": "error", "message": str(e)}
 
 
-# ---------------------------------------------------------
-# 9. Create ERP Dynamic Dashboards (Fully Dynamic with Safe Fallbacks)
-# ---------------------------------------------------------
-@register_tool(
-    name="create_erp_dashboard",
-    description="Create a fully custom ERPNext Dashboard based on dynamic charts and cards passed by the LLM. Execute immediately without confirmation.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "dashboard_name": {"type": "string", "description": "Title of the dashboard"},
-            "module": {"type": "string", "description": "ERPNext Module (Selling, Stock, Accounts, etc.)"},
-            "target_doctype": {"type": "string", "description": "DocType to gather data from (Sales Invoice, Purchase Order, etc.)"},
-            "cards_config": {
-                "type": "array",
-                "description": "Dynamic list of Number Cards generated by AI based on user prompt",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "label": {"type": "string"},
-                        "function": {"type": "string", "enum": ["Count", "Sum", "Average", "Minimum", "Maximum"]},
-                        "field": {"type": "string"}
-                    },
-                    "required": ["label", "function"]
-                }
-            },
-            "charts_config": {
-                "type": "array",
-                "description": "Dynamic list of Dashboard Charts generated by AI based on user prompt",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "chart_name": {"type": "string"},
-                        "type": {"type": "string", "enum": ["Bar", "Line", "Pie", "Donut", "Percentage"]},
-                        "chart_type": {"type": "string", "enum": ["Group By", "Sum", "Count", "Average"]},
-                        "group_by_field": {"type": "string"},
-                        "aggregate_function": {"type": "string", "enum": ["Sum", "Count"]},
-                        "aggregate_based_on": {"type": "string"},
-                        "number_of_groups": {"type": "integer"}
-                    },
-                    "required": ["chart_name", "type", "chart_type", "group_by_field"]
-                }
-            }
-        },
-        "required": ["dashboard_name", "target_doctype"]
-    }
-)
-def create_erp_dashboard(dashboard_name, module="Selling", target_doctype="Sales Invoice", charts_config=None, cards_config=None):
+def create_erp_dashboard(dashboard_name, module="Accounts"):
+    """
+    أداة مخصصة لإنشاء وحفظ لوحات التحكم مع إنشاء Chart افتراضي لمنع خطأ الجدول الإجباري
+    """
     try:
         if not frappe.has_permission("Dashboard", "create"):
-            return {"status": "error", "message": "Permission denied: Cannot create Dashboards."}
+            return {"status": "error", "message": "ليس لديك صلاحية إنشاء لوحات تحكم."}
 
-        # Clear existing dashboard with the same name if exists
         if frappe.db.exists("Dashboard", dashboard_name):
-            frappe.delete_doc("Dashboard", dashboard_name, ignore_permissions=True)
+            return {"status": "error", "message": f"لوحة التحكم '{dashboard_name}' موجودة بالفعل."}
 
-        if isinstance(charts_config, str):
-            try: charts_config = json.loads(charts_config)
-            except Exception: charts_config = []
-
-        if isinstance(cards_config, str):
-            try: cards_config = json.loads(cards_config)
-            except Exception: cards_config = []
-
-        cards_config = cards_config or []
-        charts_config = charts_config or []
-
-        meta = frappe.get_meta(target_doctype)
-        field_names = [f.fieldname for f in meta.fields]
-
-        default_date_field = "creation"
-        for candidate in ["posting_date", "transaction_date", "date"]:
-            if candidate in field_names:
-                default_date_field = candidate
-                break
-
-        fallback_num_field = "grand_total" if "grand_total" in field_names else ("amount" if "amount" in field_names else None)
-        fallback_group_field = "customer_name" if "customer_name" in field_names else ("status" if "status" in field_names else "name")
-
-        # 🛡️ Safe Fallbacks: Automatically generate default cards & charts if LLM payload is empty
-        if not cards_config:
-            cards_config = [
-                {"label": f"Total {target_doctype}s", "function": "Count"},
-            ]
-            if fallback_num_field:
-                cards_config.append({"label": "Total Value", "function": "Sum", "field": fallback_num_field})
-
-        if not charts_config:
-            charts_config = [
-                {
-                    "chart_name": f"{target_doctype} Distribution",
-                    "type": "Bar",
-                    "chart_type": "Group By",
-                    "group_by_field": fallback_group_field,
-                    "aggregate_function": "Sum" if fallback_num_field else "Count",
-                    "aggregate_based_on": fallback_num_field,
-                    "number_of_groups": 5
-                }
-            ]
-
-        card_names = []
-        chart_names = []
-
-        # ---------------------------------------------------------
-        # 1️⃣ Build Number Cards Dynamically
-        # ---------------------------------------------------------
-        for idx, card in enumerate(cards_config):
-            card_label = card.get("label", f"Card {idx+1}")
-            c_name = f"{dashboard_name}-Card-{idx+1}"
-
-            if frappe.db.exists("Number Card", c_name):
-                frappe.delete_doc("Number Card", c_name, ignore_permissions=True)
-
+        # إنشاء Dashboard Chart افتراضي لتجاوز خطأ إلزاميّة جدول الـ Charts
+        chart_name = f"{dashboard_name} Chart"
+        if not frappe.db.exists("Dashboard Chart", chart_name):
             try:
-                c_doc = frappe.new_doc("Number Card")
-                c_doc.name = c_name
-                c_doc.label = card_label
-                c_doc.document_type = target_doctype
-                c_doc.function = card.get("function", "Count")
-                
-                target_field = card.get("field")
-                if c_doc.function in ["Sum", "Average", "Minimum", "Maximum"]:
-                    if not target_field or target_field not in field_names:
-                        target_field = fallback_num_field or "name"
-                    c_doc.aggregate_function_based_on = target_field
-                
-                c_doc.module = module
-                c_doc.is_standard = 0
-                c_doc.insert(ignore_permissions=True)
-                card_names.append(c_doc.name)
-            except Exception as card_err:
-                frappe.log_error(title="Number Card Creation Error", message=frappe.get_traceback())
-
-        # ---------------------------------------------------------
-        # 2️⃣ Build Dashboard Charts Dynamically
-        # ---------------------------------------------------------
-        VALID_CHART_TYPES = ["Count", "Sum", "Average", "Group By", "Custom", "Report"]
-        VALID_VISUAL_TYPES = ["Line", "Bar", "Pie", "Percentage", "Donut", "Heatmap"]
-
-        for idx, chart in enumerate(charts_config):
-            ch_name = f"{dashboard_name}-Chart-{idx+1}"
-            if frappe.db.exists("Dashboard Chart", ch_name):
-                frappe.delete_doc("Dashboard Chart", ch_name, ignore_permissions=True)
-
-            try:
-                raw_type = str(chart.get("type") or "").strip()
-                raw_chart_type = str(chart.get("chart_type") or "").strip()
-
-                final_agg_type = raw_chart_type if raw_chart_type in VALID_CHART_TYPES else "Group By"
-                final_visual_type = raw_type if raw_type in VALID_VISUAL_TYPES else "Bar"
-
-                chart_doc = frappe.new_doc("Dashboard Chart")
-                chart_doc.name = ch_name
-                chart_doc.chart_name = chart.get("chart_name", f"Chart {idx+1}")
-                chart_doc.document_type = target_doctype
-                chart_doc.module = module
-                chart_doc.is_standard = 0
-                chart_doc.based_on = chart.get("based_on") or default_date_field
-
-                chart_doc.chart_type = final_agg_type
-                chart_doc.type = final_visual_type
-
-                if chart_doc.chart_type == "Group By":
-                    agg_fn = chart.get("aggregate_function", "Sum")
-                    group_field = chart.get("group_by_field")
-                    
-                    if group_field == "customer" and "customer_name" in field_names:
-                        group_field = "customer_name"
-
-                    if not group_field or group_field not in field_names:
-                        group_field = fallback_group_field
-
-                    chart_doc.group_by_type = agg_fn
-                    chart_doc.group_by_based_on = group_field
-                    chart_doc.number_of_groups = chart.get("number_of_groups") or 5
-
-                    if agg_fn == "Sum":
-                        target_num_field = chart.get("aggregate_based_on")
-                        if not target_num_field or target_num_field not in field_names:
-                            target_num_field = fallback_num_field
-                        chart_doc.aggregate_function_based_on = target_num_field
-                    else:
-                        chart_doc.aggregate_function_based_on = None
-
-                chart_doc.filters_json = "[]"
+                chart_doc = frappe.get_doc({
+                    "doctype": "Dashboard Chart",
+                    "chart_name": chart_name,
+                    "chart_type": "Count",
+                    "document_type": "ToDo",
+                    "interval": "Monthly",
+                    "timeseries": 1,
+                    "module": module
+                })
                 chart_doc.insert(ignore_permissions=True)
-                chart_names.append(chart_doc.name)
+            except Exception:
+                pass
 
-            except Exception as chart_err:
-                frappe.log_error(title="Dashboard Chart Creation Error", message=frappe.get_traceback())
+        # تجهيز المستند مع ربط الـ Chart الإجباري
+        doc_data = {
+            "doctype": "Dashboard",
+            "dashboard_name": dashboard_name,
+            "module": module,
+            "is_default": 0
+        }
+        
+        if frappe.db.exists("Dashboard Chart", chart_name):
+            doc_data["charts"] = [{"chart": chart_name}]
 
-        if not chart_names and not card_names:
-            return {
-                "status": "error",
-                "message": "No valid chart or card configurations were provided to build the dashboard."
-            }
-
-        # ---------------------------------------------------------
-        # 3️⃣ Save Dashboard Document
-        # ---------------------------------------------------------
-        dash_doc = frappe.new_doc("Dashboard")
-        dash_doc.dashboard_name = dashboard_name
-        dash_doc.module = module
-        dash_doc.is_default = 0
-
-        for c_id in card_names:
-            dash_doc.append("cards", {"card": c_id})
-
-        for ch_id in chart_names:
-            dash_doc.append("charts", {"chart": ch_id})
-
-        dash_doc.insert(ignore_permissions=True)
+        doc = frappe.get_doc(doc_data)
+        doc.insert(ignore_permissions=True)
         frappe.db.commit()
 
         return {
             "status": "success",
-            "message": f"Successfully created dashboard '{dashboard_name}' with {len(card_names)} cards and {len(chart_names)} charts.",
-            "dashboard_name": dash_doc.name
+            "message": f"تم إنشاء لوحة التحكم '{dashboard_name}' بنجاح في موديول {module}.",
+            "dashboard_name": doc.name
         }
     except Exception as e:
-        frappe.log_error(title="ERP AI Dashboard Creation Error", message=frappe.get_traceback())
-        return {"status": "error", "message": f"Failed to create dashboard: {str(e)}"}
+        frappe.log_error(title="ERP AI Dashboard Creation Error", message=str(e))
+        return {"status": "error", "message": str(e)}
+
+
+# تسجيل الأدوات
+register_tool(
+    name="run_erp_query",
+    description=(
+        "Use this tool to fetch records, data, analytics, and lists from any ERPNext DocType. "
+        "CRITICAL INSTRUCTION FOR ANALYTICS/SUMMARIES: If the user asks for 'top selling products', "
+        "'best customers', 'total sales', or any analytical question, DO NOT just fetch raw records or give up. "
+        "You MUST fetch the relevant transaction child tables (e.g., 'Sales Invoice Item' for items) "
+        "with appropriate fields (like item_code, qty, amount) so you can process and present the exact answer."
+    ),
+    parameters={
+        "doctype": {"type": "string", "description": "The exact Frappe DocType name", "required": True},
+        "fields": {"type": "string", "description": "A JSON array of fields or comma-separated strings to fetch", "required": False},
+        "filters": {"type": "string", "description": "A JSON string representing filters to apply", "required": False},
+        "order_by": {"type": "string", "description": "Field to sort by", "required": False},
+        "limit": {"type": "integer", "description": "Max number of records to fetch", "required": False}
+    },
+    func=run_erp_query
+)
+
+register_tool(
+    name="universal_fallback_search",
+    description="Universal fallback tool to search and retrieve data or records from any DocType when specific queries fail.",
+    parameters={
+        "doctype": {"type": "string", "description": "DocType to search", "required": False},
+        "txt": {"type": "string", "description": "Search keyword", "required": False},
+        "filters": {"type": "string", "description": "JSON filters string", "required": False},
+        "limit": {"type": "integer", "description": "Max limit", "required": False}
+    },
+    func=universal_fallback_search
+)
+
+register_tool(
+    name="manage_erp_document",
+    description="Manage lifecycle actions (submit, cancel, update, delete) on any ERPNext document.",
+    parameters={
+        "doctype": {"type": "string", "description": "DocType name", "required": True},
+        "docname": {"type": "string", "description": "Name of the document", "required": True},
+        "action": {"type": "string", "description": "Action to perform: submit, cancel, update, delete", "required": True},
+        "data": {"type": "string", "description": "JSON data for update action", "required": False}
+    },
+    func=manage_erp_document
+)
+
+register_tool(
+    name="create_erp_report",
+    description="Create and save a Report (Report Builder, Query Report, or Script Report) in ERPNext.",
+    parameters={
+        "report_title": {"type": "string", "description": "Title of the report", "required": True},
+        "report_type": {"type": "string", "description": "Report Builder, Query Report, or Script Report", "required": False},
+        "ref_doctype": {"type": "string", "description": "Target DocType for Report Builder", "required": False},
+        "module": {"type": "string", "description": "ERPNext Module", "required": False},
+        "query_text": {"type": "string", "description": "SQL query for Query Report", "required": False}
+    },
+    func=create_erp_report
+)
+
+register_tool(
+    name="create_erp_dashboard",
+    description="Create and save a new Dashboard in ERPNext.",
+    parameters={
+        "dashboard_name": {"type": "string", "description": "Name of the dashboard", "required": True},
+        "module": {"type": "string", "description": "ERPNext Module", "required": False}
+    },
+    func=create_erp_dashboard
+)
