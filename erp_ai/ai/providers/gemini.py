@@ -61,11 +61,10 @@ def ask_gemini(message: str, conversation=None):
             yield "API Key is missing."
             return
 
-        # الاتصال المباشر والآمن بدون http_options
         client = genai.Client(api_key=api_key)
 
         model_name = settings.model or "gemini-1.5-pro"
-        raw_functions = get_functions()
+        raw_functions = get_functions(provider="gemini")
         tools_list = [{"function_declarations": [f for f in raw_functions]}] if raw_functions else None
         
         gen_config = types.GenerateContentConfig(

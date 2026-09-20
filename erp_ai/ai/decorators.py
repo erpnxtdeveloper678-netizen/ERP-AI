@@ -5,6 +5,7 @@ def ai_tool(
     name: str,
     description: str,
     parameters=None,
+    providers=None,
 ):
 
     def decorator(func):
@@ -14,8 +15,10 @@ def ai_tool(
             description=description,
             parameters=parameters,
             func=func,
+            providers=providers,
         )
 
         return func
 
     return decorator
+    

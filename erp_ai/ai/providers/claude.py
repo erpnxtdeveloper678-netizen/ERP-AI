@@ -7,12 +7,6 @@ from erp_ai.ai.executor import execute_tool
 DEFAULT_MODEL = "claude-sonnet-5"
 
 
-# NOTE: every tool name mentioned below is registered in erp_ai/ai/tools/.
-# The previous version of this prompt referenced get_doctype_schema,
-# create_erp_document, execute_doc_method, and get_system_analytics - none
-# of which existed anywhere in the codebase, so the model would either
-# hallucinate a call that failed with "Tool not registered" or quietly
-# give up on anything involving record creation.
 SYSTEM_PROMPT = """
 You are an AI assistant embedded in ERPNext, with tool access to query, analyze, and manage
 records on behalf of the current logged-in user. You operate strictly within that user's
@@ -77,6 +71,44 @@ Core Operational Rules:
 
 8. Language:
    - Match the user's language (Arabic or English). Keep responses clear and professional.
+
+9. Cross-document actions (Connections, assignment, workflow):
+   - Use get_linked_documents to find records linked to a given document (e.g. all
+     invoices/deliveries/payments tied to a Customer) - this mirrors the "Connections"
+     tab on the form.
+   - Use assign_document to assign a document to one or more users (creates a ToDo).
+   - Use apply_workflow_action for approval-style transitions (Leave Application,
+     Expense Claim, custom workflows) - if you're not sure of the exact action label
+     for this document's workflow, ask the user rather than guessing.
+   - Use add_comment to leave a note on a document's timeline.
+
+10. "Create X from Y" (mapped documents):
+    - Use create_linked_document for ERPNext's native document-mapping flows (e.g.
+      Sales Order -> Sales Invoice, Lead -> Customer). It only supports a fixed set of
+      known-safe source/target pairs; if the pair isn't supported it will tell you which
+      targets ARE valid for that source doctype - relay that to the user rather than
+      trying create_document as a workaround, since that would skip ERPNext's own
+      field-mapping logic (pricing, quantities already delivered/invoiced, etc).
+    - Use duplicate_document to copy an existing document as a starting point for a new
+      one (not for the "make X from Y" case above - that's what create_linked_document
+      is for).
+
+11. Bulk changes:
+    - Use bulk_update_documents to apply the same change to several documents at once
+      (max 50 per call). This is a real, irreversible write - always state the exact
+      list of documents and the change in plain text and wait for the user's explicit
+      confirmation in their next message before calling it.
+
+12. Search:
+    - Use global_search only when you don't know which DocType a record belongs to.
+      When the DocType is known, list_documents with filters is faster and more precise.
+
+13. Email & printing (use with caution):
+    - Use generate_print_pdf to produce and attach a PDF of a document.
+    - Use send_document_email to email a document - this sends a REAL email immediately.
+      NEVER guess or infer a recipient address. State the exact recipient and document
+      in plain text and only call this after the user explicitly confirms in their next
+      message.
 """
 
 
@@ -127,7 +159,7 @@ def _convert_param_schema(prop_data):
 
 def _build_claude_tools():
     claude_tools = []
-    for fn in get_functions():
+    for fn in get_functions(provider="claude"):
         tool_def = {
             "name": fn["name"],
             "description": fn["description"],
@@ -175,12 +207,6 @@ def ask_claude(message: str, conversation: list = None):
     response = _call_claude(client, model_name, messages_payload, claude_tools)
 
     tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-    # A multi-chart dashboard (one create_dashboard_chart call per KPI, plus one
-    # create_dashboard call at the end) can legitimately need a dozen+ tool calls,
-    # and Claude may issue several tool_use blocks in a single turn (parallel
-    # tool calls) - every one of them MUST get a matching tool_result in the
-    # very next message, or the next API call fails with a 400 error like:
-    # "tool_use ids were found without tool_result blocks immediately after".
     max_tool_iterations = 20
     iteration = 0
 
@@ -199,8 +225,6 @@ def ask_claude(message: str, conversation: list = None):
                 "content": json.dumps(tool_result, ensure_ascii=False, default=str),
             })
 
-        # ALL tool_result blocks for this turn go in ONE user message, in the
-        # same order as the tool_use blocks they answer.
         messages_payload.append({"role": "user", "content": tool_result_blocks})
 
         response = _call_claude(client, model_name, messages_payload, claude_tools)

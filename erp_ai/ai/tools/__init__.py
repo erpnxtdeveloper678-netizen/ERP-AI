@@ -7,3 +7,4 @@ from erp_ai.ai.tools import system  # noqa: F401
 from erp_ai.ai.tools import documents  # noqa: F401
 from erp_ai.ai.tools import analytics  # noqa: F401
 from erp_ai.ai.tools import reports  # noqa: F401
+from erp_ai.ai.tools import workflow  # noqa: F401 - Claude-only tools, see providers=["claude"] there

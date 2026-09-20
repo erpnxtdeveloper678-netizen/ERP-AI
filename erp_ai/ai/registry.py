@@ -13,12 +13,16 @@ shared validation helpers in tools/_security.py.
 TOOLS = {}
 
 
-def register_tool(name, description, parameters, func):
+def register_tool(name, description, parameters, func, providers=None):
+    """`providers`, if given, restricts which AI provider's tool list this tool
+    appears in (e.g. providers=["claude"]). Existing tools all pass providers=None
+    (the default), meaning "available to every provider" - unchanged behavior."""
     TOOLS[name] = {
         "name": name,
         "description": description,
         "parameters": parameters or {},
         "function": func,
+        "providers": providers,
     }
 
 
@@ -34,10 +38,18 @@ def get_tool(name):
     return TOOLS.get(name)
 
 
-def get_functions():
-    """Provider-agnostic tool schema (used by the Gemini provider)."""
+def get_functions(provider=None):
+    """Provider-agnostic tool schema. Pass provider="claude"/"gemini" to filter
+    out tools registered with a `providers` allowlist that doesn't include it.
+    Tools registered with providers=None (the default) are always included,
+    regardless of which provider is asked for - so calling this with no
+    argument at all (as before) still returns every tool, unchanged."""
     functions_list = []
     for tool in TOOLS.values():
+        allowed_providers = tool.get("providers")
+        if provider and allowed_providers and provider not in allowed_providers:
+            continue
+
         param_properties = {}
         required_fields = []
 
@@ -61,3 +73,4 @@ def get_functions():
             },
         })
     return functions_list
+    
