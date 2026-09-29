@@ -15,6 +15,23 @@ tell the user plainly that they lack the required rights; do not try to work aro
 
 Core Operational Rules:
 
+0. Custom DocTypes (read this first):
+   - This ERPNext site almost certainly has DocTypes beyond the standard ones you
+     already know from training - custom modules built specifically for this
+     business (e.g. "Delivery Confirmation", "Driver Trip", "Freight Quote",
+     anything). These vary per site/company and you cannot know them in advance.
+   - Whenever the user refers to a business object, record type, or process you
+     don't immediately recognize as a standard ERPNext DocType, do NOT assume it
+     doesn't exist and do NOT ask the user to explain it in the abstract - call
+     find_doctype with keywords from what they said FIRST.
+   - If find_doctype returns a match, treat it exactly like any standard DocType
+     from here on: call get_doctype_meta to learn its real fields, then use
+     list_documents / get_document / create_document / update_document /
+     analyze_data / etc. normally - every generic tool works identically on
+     custom DocTypes, there is nothing special to do differently.
+   - Only tell the user a DocType/feature doesn't exist on this site after
+     find_doctype has come back with no relevant match.
+
 1. Schema discovery:
    - Before create_document or update_document, if you're not certain of the exact field
      names or which fields are required, call get_doctype_meta first.
@@ -176,23 +193,63 @@ def _build_claude_tools():
     return claude_tools
 
 
-def _call_claude(client, model_name, messages_payload, claude_tools):
+def _build_system_prompt(page_context=None):
+    """Append page-context info to the base SYSTEM_PROMPT for this one
+    request only. Built fresh per call (never mutates the module-level
+    SYSTEM_PROMPT constant) since multiple users' requests can be in
+    flight on the same worker at once.
+
+    page_context is informational only - it tells the model what page the
+    user is currently looking at (from frappe.get_route() client-side), so
+    it can answer "what am I looking at" without the user having to repeat
+    the doctype/name. It is NOT a trust boundary: the model must still call
+    the normal tools (get_document, etc.) to actually read data, and those
+    enforce real ERPNext permissions regardless of what page_context claims.
+    """
+    if not page_context or not isinstance(page_context, dict):
+        return SYSTEM_PROMPT
+
+    doctype = page_context.get("doctype")
+    docname = page_context.get("docname")
+    route = page_context.get("route")
+    if not (doctype or route):
+        return SYSTEM_PROMPT
+
+    lines = [
+        "\n\nCurrent page context (from the user's browser - informational only, NOT verified data; "
+        "call the normal tools like get_document if you need to confirm or read the actual document):"
+    ]
+    if route:
+        lines.append(f"- Route: {route}")
+    if doctype:
+        lines.append(f"- DocType open: {doctype}")
+    if docname:
+        lines.append(f"- Document name open: {docname}")
+    lines.append(
+        "If the user's message refers to \"this\", \"this document\", \"the current page\", etc. "
+        "without naming a record, assume they mean the one above."
+    )
+    return SYSTEM_PROMPT + "\n".join(lines)
+
+
+def _call_claude(client, model_name, messages_payload, claude_tools, system_prompt=None):
     """Anthropic SDK errors (bad request, rate limit, overloaded, etc.) were
     previously uncaught here, so they fell all the way through to api.py's
     generic handler with no clue which of the many tool calls in a
     multi-chart request actually failed. Surface a specific message instead."""
     try:
         return client.messages.create(
-            model=model_name, max_tokens=2500, system=SYSTEM_PROMPT,
+            model=model_name, max_tokens=2500, system=system_prompt or SYSTEM_PROMPT,
             messages=messages_payload, tools=claude_tools,
         )
     except anthropic.APIError as e:
         frappe.throw(f"Anthropic API error: {getattr(e, 'message', str(e))}")
 
 
-def ask_claude(message: str, conversation: list = None):
+def ask_claude(message: str, conversation: list = None, page_context: dict = None):
     client, model_name = _get_anthropic_client()
     claude_tools = _build_claude_tools()
+    system_prompt = _build_system_prompt(page_context)
 
     messages_payload = []
     if conversation and isinstance(conversation, list):
@@ -204,7 +261,7 @@ def ask_claude(message: str, conversation: list = None):
 
     messages_payload.append({"role": "user", "content": message})
 
-    response = _call_claude(client, model_name, messages_payload, claude_tools)
+    response = _call_claude(client, model_name, messages_payload, claude_tools, system_prompt)
 
     tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
     max_tool_iterations = 20
@@ -227,7 +284,7 @@ def ask_claude(message: str, conversation: list = None):
 
         messages_payload.append({"role": "user", "content": tool_result_blocks})
 
-        response = _call_claude(client, model_name, messages_payload, claude_tools)
+        response = _call_claude(client, model_name, messages_payload, claude_tools, system_prompt)
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
     text_block = next((b for b in response.content if b.type == "text"), None)

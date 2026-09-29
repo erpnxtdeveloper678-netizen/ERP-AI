@@ -175,12 +175,15 @@
 }
 
 /* استثناء صريح: مربع الكتابة لازم يفضل قابل للتحديد/النسخ عشان المستخدم
-   يقدر يعدّل أو ينسخ كلامه بشكل طبيعي. */
+   يقدر يعدّل أو ينسخ كلامه بشكل طبيعي.
+   ملاحظة: بنستخدم !important هنا لأن القاعدة اللي فوق (#erp-ai-window *)
+   عندها specificity أعلى من .erp-ai-message بسبب الـ ID، فكانت بتكسب
+   وتمنع التظليل في الرسائل رغم إننا كاتبينها بعدها في الملف. */
 #erp-ai-input,
 .erp-ai-message,
 .erp-ai-message * {
-    user-select: text;
-    -webkit-user-select: text;
+    user-select: text !important;
+    -webkit-user-select: text !important;
 }
 
 #erp-ai-title {

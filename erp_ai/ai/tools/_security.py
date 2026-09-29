@@ -151,3 +151,55 @@ def parse_json_object(value, param_name="data"):
     if not isinstance(value, dict):
         frappe.throw(f"`{param_name}` must be an object.")
     return value
+
+
+def resolve_document_name(doctype, value, name_fields=None):
+    """General-purpose version of the fix first applied in tools/inventory.py
+    (_resolve_item_code): users naturally refer to a Customer, Employee,
+    Supplier, etc. by their display name - often in Arabic - not by the
+    internal primary key. A strict frappe.db.exists(doctype, value) lookup
+    alone fails for anything that isn't the exact `name`, which is exactly
+    the bug that made get_stock_balance fail on an Arabic item name.
+
+    Tries the exact primary key first (fast path), then falls back to a
+    partial, case-insensitive match against `name_fields` (defaults to the
+    DocType's own title_field, e.g. customer_name for Customer). Raises a
+    clear error - listing the candidates - if the name is ambiguous,
+    instead of silently guessing which record the caller meant.
+    """
+    validate_doctype(doctype)
+    value = (value or "").strip()
+    if not value:
+        frappe.throw(f"A {doctype} name or ID is required.")
+
+    if frappe.db.exists(doctype, value):
+        return value
+
+    if not name_fields:
+        meta = frappe.get_meta(doctype)
+        title_field = getattr(meta, "title_field", None)
+        name_fields = [title_field] if title_field else []
+    elif isinstance(name_fields, str):
+        name_fields = [name_fields]
+
+    if not name_fields:
+        frappe.throw(f"Unknown {doctype}: '{value}'. No record matches that ID.")
+
+    for f in name_fields:
+        validate_fieldname(doctype, f)
+
+    matches = frappe.get_list(
+        doctype,
+        or_filters=[[f, "like", f"%{value}%"] for f in name_fields],
+        fields=["name"] + name_fields,
+        limit_page_length=10,
+    )
+    if len(matches) == 1:
+        return matches[0]["name"]
+    if len(matches) > 1:
+        label_field = name_fields[0]
+        options = ", ".join(f"{m['name']} ({m.get(label_field, '')})" for m in matches)
+        frappe.throw(f"'{value}' matches more than one {doctype} - please specify the exact one: {options}.")
+
+    frappe.throw(f"Unknown {doctype}: '{value}'. No record matches that ID or name.")
+    

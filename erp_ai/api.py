@@ -348,7 +348,7 @@ def _create_dashboard_now(pending: dict, lang: str):
 
 
 @frappe.whitelist()
-def ask(message, conversation=None, file_data=None, file_name=None, conversation_name=None):
+def ask(message, conversation=None, file_data=None, file_name=None, conversation_name=None, page_context=None):
     if conversation:
         try:
             conversation = json.loads(conversation)
@@ -357,13 +357,21 @@ def ask(message, conversation=None, file_data=None, file_name=None, conversation
     else:
         conversation = []
 
+    if page_context:
+        try:
+            page_context = json.loads(page_context) if isinstance(page_context, str) else page_context
+            if not isinstance(page_context, dict):
+                page_context = None
+        except Exception:
+            page_context = None
+
     trimmed_conversation = trim_chat_history(conversation)
     full_message = message or ""
 
     if file_data:
         full_message = f"[Attached File: {file_name}]\nFile Content:\n{file_data}\n\nUser Question:\n{full_message}"
 
-    res = call_ai_service(full_message, trimmed_conversation)
+    res = call_ai_service(full_message, trimmed_conversation, page_context)
 
     try:
         updated_conversation = list(conversation)
@@ -379,13 +387,13 @@ def ask(message, conversation=None, file_data=None, file_name=None, conversation
     return res
 
 
-def call_ai_service(message, conversation):
+def call_ai_service(message, conversation, page_context=None):
     lang = _detect_lang(message)
     reply = ""
 
     try:
         from erp_ai.ai.service import ask_ai
-        response_generator = ask_ai(message=message, conversation=conversation)
+        response_generator = ask_ai(message=message, conversation=conversation, page_context=page_context)
         if hasattr(response_generator, "__iter__") and not isinstance(response_generator, (str, dict, list)):
             reply = "".join([str(chunk) for chunk in response_generator if chunk])
         else:

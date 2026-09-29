@@ -81,6 +81,22 @@ def execute_tool(name: str, args: dict = None):
 
     try:
         result = tool["function"](**clean_args)
+
+        # Commit right away, BEFORE anything else runs in this request
+        # (the AI Tool Log insert below, another tool call, another Anthropic
+        # API round-trip...). Until a commit happens, a write like
+        # doc.submit() is only *pending* - if literally anything later in
+        # this same request throws (including the best-effort logging
+        # insert failing, or the follow-up model call erroring), Frappe can
+        # end up rolling back everything since the last commit, silently
+        # undoing a change the tool - and the model, truthfully, based on
+        # what execute_tool returned - already reported as successful.
+        # Read-only tools are unaffected: committing after a read is a no-op.
+        try:
+            frappe.db.commit()
+        except Exception:
+            _safe_log(f"ERP AI Executor Commit Error ({name})", frappe.get_traceback())
+
         _log_tool_call(name, clean_args, target_doctype, "Success", result)
         return result
     except TypeError as e:

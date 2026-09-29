@@ -483,6 +483,15 @@ class ERPAI {
                 word-break: normal;
                 overflow-wrap: break-word;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+                user-select: text;
+                -webkit-user-select: text;
+                cursor: text;
+            }
+            .erp-ai-message a {
+                color: var(--erp-accent);
+                text-decoration: underline;
+                cursor: pointer;
+                user-select: text;
             }
             .erp-ai-message.user {
                 background: var(--erp-accent-soft);
@@ -1088,11 +1097,37 @@ class ERPAI {
         this.messages.push({ role: "user", content: message });
         this.addMessage(displayMessage, "user", false);
 
+        // Capture what page the user is currently on (Frappe's client-side
+        // route), so the assistant can be told "you're looking at Sales
+        // Invoice SIV-2026-00065" instead of having zero page awareness.
+        // This is informational only - every tool still enforces real
+        // permissions when it actually fetches data, so a stale/spoofed
+        // route here can't leak anything a proper tool call wouldn't.
+        let pageContext = null;
+        try {
+            if (typeof frappe !== "undefined" && typeof frappe.get_route === "function") {
+                const route = frappe.get_route() || [];
+                if (route.length) {
+                    pageContext = {
+                        route: route.join("/"),
+                        doctype: route[1] || null,
+                        docname: route.length > 2 ? route.slice(2).join("/") : null,
+                    };
+                }
+            }
+        } catch (e) {
+            pageContext = null;
+        }
+
         let argsPayload = {
             message: message || "قم بتحليل هذا الملف المرفق",
             conversation: JSON.stringify(this.messages.slice(0, -1)),
             conversation_name: this.conversation
         };
+
+        if (pageContext) {
+            argsPayload.page_context = JSON.stringify(pageContext);
+        }
 
         if (this.attachedFileContent) {
             argsPayload.file_data = this.attachedFileContent;
@@ -1174,6 +1209,15 @@ class ERPAI {
         return div.innerHTML;
     }
 
+    fixLinksInBubble(bubble) {
+        // Markdown-rendered links should open in a new tab instead of
+        // navigating away from the ERP screen the user is on.
+        bubble.querySelectorAll("a[href]").forEach(a => {
+            a.setAttribute("target", "_blank");
+            a.setAttribute("rel", "noopener noreferrer");
+        });
+    }
+
     renderContent(bubble, cleanText, isStreaming, onComplete) {
         const tableData = this.extractTableData(cleanText);
         if (tableData && tableData.length > 0) {
@@ -1198,6 +1242,7 @@ class ERPAI {
             htmlOutput += `<button type="button" class="export-csv-btn" data-csv-payload="${encodedData}" style="cursor:pointer; background:var(--erp-surface-soft); border:1px solid var(--erp-border); color:var(--erp-ink); border-radius:8px; padding:8px; font-size:12px; font-weight:600; width:100%; margin-top:8px; transition: background 150ms;">⬇ Download (CSV)</button>`;
 
             bubble.innerHTML = htmlOutput;
+            this.fixLinksInBubble(bubble);
             const exportBtn = bubble.querySelector(".export-csv-btn");
             if (exportBtn) {
                 exportBtn.addEventListener("click", () => {
@@ -1225,13 +1270,65 @@ class ERPAI {
                         clearInterval(typeInterval);
                         bubble.classList.remove("erp-typing-cursor");
                         bubble.innerHTML = window.frappe && frappe.markdown ? frappe.markdown(cleanText) : this.escapeHtml(cleanText);
+                        this.fixLinksInBubble(bubble);
                         if (onComplete) onComplete();
                     }
                 }, speed);
             } else {
                 bubble.innerHTML = window.frappe && frappe.markdown ? frappe.markdown(cleanText) : this.escapeHtml(cleanText);
+                this.fixLinksInBubble(bubble);
                 if (onComplete) onComplete();
             }
+        }
+    }
+
+    copyToClipboard(text) {
+        const notify = (ok) => {
+            const message = ok ? "Copied to clipboard" : "Could not copy - please select and copy the text manually.";
+            const indicator = ok ? "green" : "red";
+            if (typeof frappe !== "undefined" && typeof frappe.show_alert === "function") {
+                frappe.show_alert({ message, indicator });
+            } else {
+                alert(message);
+            }
+        };
+
+        const fallbackCopy = () => {
+            try {
+                const textarea = document.createElement("textarea");
+                textarea.value = text;
+                // Keep it in the viewport (some browsers refuse to copy
+                // from elements positioned off-screen) but invisible.
+                textarea.style.position = "fixed";
+                textarea.style.top = "0";
+                textarea.style.left = "0";
+                textarea.style.opacity = "0";
+                document.body.appendChild(textarea);
+                textarea.focus();
+                textarea.select();
+                textarea.setSelectionRange(0, textarea.value.length);
+                const successful = document.execCommand("copy");
+                document.body.removeChild(textarea);
+                notify(!!successful);
+            } catch (err) {
+                console.error("Fallback copy failed: ", err);
+                notify(false);
+            }
+        };
+
+        // navigator.clipboard is only defined in secure contexts (HTTPS or
+        // localhost) and can still reject (e.g. missing permission, document
+        // not focused). Always have the execCommand fallback ready instead
+        // of leaving the button silently doing nothing.
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+            navigator.clipboard.writeText(text).then(() => {
+                notify(true);
+            }).catch(err => {
+                console.warn("navigator.clipboard failed, falling back:", err);
+                fallbackCopy();
+            });
+        } else {
+            fallbackCopy();
         }
     }
 
@@ -1263,15 +1360,7 @@ class ERPAI {
             `;
 
             actionsToolbar.querySelector(".erp-copy-btn").addEventListener("click", () => {
-                navigator.clipboard.writeText(cleanText).then(() => {
-                    if (typeof frappe !== "undefined" && typeof frappe.show_alert === "function") {
-                        frappe.show_alert({message: "Copied to clipboard", indicator: "green"});
-                    } else {
-                        alert("Copied to clipboard");
-                    }
-                }).catch(err => {
-                    console.error("Failed to copy text: ", err);
-                });
+                this.copyToClipboard(cleanText);
             });
 
             actionsToolbar.querySelector(".erp-regen-btn").addEventListener("click", () => {

@@ -49,7 +49,39 @@ def _build_messages(message, conversation=None):
     return messages
 
 
-def ask_gemini(message: str, conversation=None):
+def _build_gemini_system_instruction(page_context=None):
+    base = """
+أنت محلل بيانات مالي ومساعد ذكي مدمج داخل نظام ERPNext (تتحدث بلهجة مهنية، واضحة، ومباشرة بدون مقدمات إنشائية).
+جميع الأدوات مقيدة تلقائياً بصلاحيات المستخدم الحالي في ERPNext - لا تحاول تجاوز رسالة "permission" إذا ظهرت.
+
+مهم جدًا - DocTypes مخصصة (Custom): النظام ده غالبًا فيه أنواع مستندات خاصة بيها (custom DocTypes) اتعملت خصيصًا لطبيعة عمل الشركة دي، ومش هتلاقيها في تدريبك العادي لأنها بتختلف من نظام لنظام. لو المستخدم ذكر نوع سجل أو مصطلح عمل مش عارفه، **متفترضش إنه مش موجود** - استخدم أداة 'find_doctype' الأول بكلمات من كلامه. لو رجعلك نتيجة، تعامل معاه بنفس الطريقة العادية (get_doctype_meta لمعرفة الحقول، وبعدين list_documents/get_document/create_document حسب الحاجة) - كل الأدوات العامة بتشتغل مع أي DocType عادي أو مخصص من غير فرق. قول للمستخدم إن الحاجة دي مش موجودة بس لو 'find_doctype' رجع فاضي فعلاً.
+
+- لتحليل مبيعات أو مقارنة عملاء: استخدم أداة 'analyze_data' مع (operation: "group", group_by: "customer", field: "grand_total", aggregate: "sum").
+- لأكبر/أقل قيمة (فاتورة، طلب...): استخدم 'analyze_data' مع (operation: "max" أو "min", field: "grand_total").
+- لعرض قائمة سجلات مفلترة: استخدم 'list_documents'. لسجل واحد بالاسم: استخدم 'get_document'.
+- لإنشاء سجل جديد: استخدم 'create_document' (استعلم أولاً عبر 'get_doctype_meta' إذا لم تكن متأكداً من أسماء الحقول).
+- لإنشاء تقرير محفوظ: استخدم 'create_report'. لإنشاء رسم بياني: استخدم 'create_dashboard_chart'. لتجميع الرسوم في لوحة تحكم: استخدم 'create_dashboard'.
+
+أجب دائماً باللغة التي يتحدث بها المستخدم.
+"""
+    if page_context and isinstance(page_context, dict):
+        doctype = page_context.get("doctype")
+        docname = page_context.get("docname")
+        route = page_context.get("route")
+        if doctype or route:
+            extra = "\n\nالصفحة اللي المستخدم فاتحها دلوقتي في المتصفح (معلومة إرشادية بس - لو محتاج تتأكد من البيانات الفعلية استخدم get_document):"
+            if route:
+                extra += f"\n- المسار: {route}"
+            if doctype:
+                extra += f"\n- نوع المستند (DocType): {doctype}"
+            if docname:
+                extra += f"\n- اسم المستند: {docname}"
+            extra += "\nلو المستخدم قال \"المستند ده\" أو \"الصفحة دي\" من غير ما يحدد اسم، يبقى قصده المستند اللي فوق."
+            base = base + extra
+    return base
+
+
+def ask_gemini(message: str, conversation=None, page_context=None):
     """
     الدالة الإنتاجية النهائية للعمل مع المفتاح المدفوع وآلية Retry ذكية
     """
@@ -69,18 +101,7 @@ def ask_gemini(message: str, conversation=None):
         
         gen_config = types.GenerateContentConfig(
             tools=tools_list,
-            system_instruction="""
-أنت محلل بيانات مالي ومساعد ذكي مدمج داخل نظام ERPNext (تتحدث بلهجة مهنية، واضحة، ومباشرة بدون مقدمات إنشائية).
-جميع الأدوات مقيدة تلقائياً بصلاحيات المستخدم الحالي في ERPNext - لا تحاول تجاوز رسالة "permission" إذا ظهرت.
-
-- لتحليل مبيعات أو مقارنة عملاء: استخدم أداة 'analyze_data' مع (operation: "group", group_by: "customer", field: "grand_total", aggregate: "sum").
-- لأكبر/أقل قيمة (فاتورة، طلب...): استخدم 'analyze_data' مع (operation: "max" أو "min", field: "grand_total").
-- لعرض قائمة سجلات مفلترة: استخدم 'list_documents'. لسجل واحد بالاسم: استخدم 'get_document'.
-- لإنشاء سجل جديد: استخدم 'create_document' (استعلم أولاً عبر 'get_doctype_meta' إذا لم تكن متأكداً من أسماء الحقول).
-- لإنشاء تقرير محفوظ: استخدم 'create_report'. لإنشاء رسم بياني: استخدم 'create_dashboard_chart'. لتجميع الرسوم في لوحة تحكم: استخدم 'create_dashboard'.
-
-أجب دائماً باللغة التي يتحدث بها المستخدم.
-"""
+            system_instruction=_build_gemini_system_instruction(page_context)
         )
 
         messages = _build_messages(message, conversation)
